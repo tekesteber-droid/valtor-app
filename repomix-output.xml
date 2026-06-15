@@ -1,0 +1,3073 @@
+This file is a merged representation of the entire codebase, combined into a single document by Repomix.
+
+<file_summary>
+This section contains a summary of this file.
+
+<purpose>
+This file contains a packed representation of the entire repository's contents.
+It is designed to be easily consumable by AI systems for analysis, code review,
+or other automated processes.
+</purpose>
+
+<file_format>
+The content is organized as follows:
+1. This summary section
+2. Repository information
+3. Directory structure
+4. Repository files (if enabled)
+5. Multiple file entries, each consisting of:
+  - File path as an attribute
+  - Full contents of the file
+</file_format>
+
+<usage_guidelines>
+- This file should be treated as read-only. Any changes should be made to the
+  original repository files, not this packed version.
+- When processing this file, use the file path to distinguish
+  between different files in the repository.
+- Be aware that this file may contain sensitive information. Handle it with
+  the same level of security as you would the original repository.
+</usage_guidelines>
+
+<notes>
+- Some files may have been excluded based on .gitignore rules and Repomix's configuration
+- Binary files are not included in this packed representation. Please refer to the Repository Structure section for a complete list of file paths, including binary files
+- Files matching patterns in .gitignore are excluded
+- Files matching default ignore patterns are excluded
+- Files are sorted by Git change count (files with more changes are at the bottom)
+</notes>
+
+</file_summary>
+
+<directory_structure>
+.env.example
+.gitignore
+index.html
+package.json
+src/components/AppShell.tsx
+src/integrations/supabase/client.ts
+src/integrations/supabase/config.ts
+src/main.tsx
+src/routes/__root.tsx
+src/routes/_authenticated.tsx
+src/routes/_authenticated/audit.tsx
+src/routes/_authenticated/history.tsx
+src/routes/_authenticated/index.tsx
+src/routes/_authenticated/tender-feed.tsx
+src/routes/auth.tsx
+src/routeTree.gen.ts
+src/styles.css
+src/vite-env.d.ts
+SUPABASE_SETUP.md
+supabase/migrations/001_initial_security.sql
+tsconfig.json
+vite.config.ts
+</directory_structure>
+
+<files>
+This section contains the contents of the repository's files.
+
+<file path=".env.example">
+VITE_SUPABASE_URL=https://your-project-ref.supabase.co
+VITE_SUPABASE_ANON_KEY=your-supabase-anon-or-publishable-key
+
+# Used by the audit page when calling Gemini.
+VITE_GEMINI_API_KEY=your-gemini-api-key
+</file>
+
+<file path=".gitignore">
+node_modules/
+dist/
+.tanstack/tmp/
+
+.env
+.env.*
+!.env.example
+
+*.log
+vite.config.timestamp_*.js
+</file>
+
+<file path="index.html">
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Valtor</title>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>
+</file>
+
+<file path="package.json">
+{
+  "name": "valtor",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "typecheck": "tsc --noEmit",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "@supabase/supabase-js": "^2.89.0",
+    "@tanstack/react-router": "^1.170.15",
+    "lucide-react": "^0.556.0",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "recharts": "^2.12.7",
+    "tailwindcss": "^4.1.17",
+    "tw-animate-css": "^1.4.0",
+    "xlsx": "^0.18.5"
+  },
+  "devDependencies": {
+    "@tailwindcss/vite": "^4.1.17",
+    "@tanstack/router-plugin": "^1.168.18",
+    "@types/node": "^20.12.12",
+    "@types/react": "^18.3.3",
+    "@types/react-dom": "^18.3.0",
+    "@vitejs/plugin-react": "^4.3.0",
+    "typescript": "^5.4.5",
+    "vite": "^6.4.3"
+  }
+}
+</file>
+
+<file path="src/components/AppShell.tsx">
+import { Link, useRouter } from "@tanstack/react-router";
+import {
+  LayoutDashboard,
+  FileSearch,
+  History,
+  LogOut,
+  Rss,
+  ChevronRight,
+  Shield,
+} from "lucide-react";
+import { supabase } from "@/integrations/supabase/client";
+import type { ReactNode } from "react";
+
+const navItems = [
+  { to: "/", label: "Dashboard", icon: LayoutDashboard },
+  { to: "/audit", label: "Bid Audit", icon: FileSearch },
+  { to: "/tender-feed", label: "Tender Feed", icon: Rss },
+  { to: "/history", label: "History", icon: History },
+] as const;
+
+export function AppShell({ children, userEmail }: { children: ReactNode; userEmail?: string | null }) {
+  const router = useRouter();
+
+  const signOut = async () => {
+    await supabase.auth.signOut();
+    router.navigate({ to: "/auth", replace: true });
+  };
+
+  return (
+    <div className="min-h-screen flex" style={{ background: "#F7F8FA" }}>
+      {/* Sidebar */}
+      <aside
+        className="hidden md:flex flex-col"
+        style={{
+          width: "220px",
+          minHeight: "100vh",
+          background: "#FFFFFF",
+          borderRight: "1px solid #E4E7EC",
+          position: "fixed",
+          top: 0,
+          left: 0,
+          bottom: 0,
+          zIndex: 40,
+        }}
+      >
+        {/* Logo */}
+        <div style={{ padding: "1.25rem 1.25rem 1rem", borderBottom: "1px solid #E4E7EC" }}>
+          <Link to="/" style={{ display: "flex", alignItems: "center", gap: "0.625rem", textDecoration: "none" }}>
+            <div
+              style={{
+                width: "32px",
+                height: "32px",
+                background: "#0F2240",
+                borderRadius: "6px",
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "center",
+                flexShrink: 0,
+              }}
+            >
+              <Shield size={16} color="#FFFFFF" />
+            </div>
+            <div>
+              <div style={{ fontSize: "0.9375rem", fontWeight: 700, color: "#0D1117", letterSpacing: "-0.02em", lineHeight: 1.1 }}>
+                Valtor
+              </div>
+              <div style={{ fontSize: "0.625rem", color: "#9CA3AF", letterSpacing: "0.08em", textTransform: "uppercase", marginTop: "1px" }}>
+                Bid Intelligence
+              </div>
+            </div>
+          </Link>
+        </div>
+
+        {/* Nav */}
+        <nav style={{ padding: "0.75rem 0.625rem", flex: 1 }}>
+          <div style={{ fontSize: "0.625rem", fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.07em", color: "#9CA3AF", padding: "0 0.5rem", marginBottom: "0.375rem" }}>
+            Platform
+          </div>
+          {navItems.map(({ to, label, icon: Icon }) => (
+            <Link
+              key={to}
+              to={to}
+              activeOptions={{ exact: to === "/" }}
+              activeProps={{ className: "nav-link active" }}
+              inactiveProps={{ className: "nav-link" }}
+            >
+              <Icon size={15} />
+              {label}
+            </Link>
+          ))}
+        </nav>
+
+        {/* User footer */}
+        <div style={{ padding: "0.875rem 0.625rem", borderTop: "1px solid #E4E7EC" }}>
+          {userEmail && (
+            <div style={{ fontSize: "0.6875rem", color: "#6B7280", padding: "0 0.5rem", marginBottom: "0.5rem", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+              {userEmail}
+            </div>
+          )}
+          <button onClick={signOut} className="nav-link" style={{ width: "100%", background: "none", border: "none", cursor: "pointer", justifyContent: "flex-start" }}>
+            <LogOut size={14} />
+            Sign out
+          </button>
+        </div>
+      </aside>
+
+      {/* Mobile header */}
+      <header
+        className="md:hidden"
+        style={{
+          position: "fixed",
+          top: 0,
+          left: 0,
+          right: 0,
+          zIndex: 40,
+          background: "#FFFFFF",
+          borderBottom: "1px solid #E4E7EC",
+          padding: "0.75rem 1rem",
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "space-between",
+        }}
+      >
+        <Link to="/" style={{ display: "flex", alignItems: "center", gap: "0.5rem", textDecoration: "none" }}>
+          <div style={{ width: "28px", height: "28px", background: "#0F2240", borderRadius: "5px", display: "flex", alignItems: "center", justifyContent: "center" }}>
+            <Shield size={14} color="#FFFFFF" />
+          </div>
+          <span style={{ fontWeight: 700, fontSize: "0.9375rem", color: "#0D1117" }}>Valtor</span>
+        </Link>
+        <nav style={{ display: "flex", gap: "0.25rem" }}>
+          {navItems.map(({ to, icon: Icon }) => (
+            <Link
+              key={to}
+              to={to}
+              activeOptions={{ exact: to === "/" }}
+              activeProps={{ style: { color: "#0F2240", background: "#EEF1F6" } }}
+              inactiveProps={{ style: { color: "#6B7280" } }}
+              style={{ padding: "0.375rem", borderRadius: "4px", display: "flex" }}
+            >
+              <Icon size={16} />
+            </Link>
+          ))}
+        </nav>
+      </header>
+
+      {/* Main content */}
+      <main
+        style={{
+          flex: 1,
+          marginLeft: "220px",
+          padding: "2rem",
+          maxWidth: "1280px",
+        }}
+        className="md:ml-[220px] ml-0 mt-[52px] md:mt-0"
+      >
+        {children}
+      </main>
+    </div>
+  );
+}
+</file>
+
+<file path="src/integrations/supabase/client.ts">
+import { createClient } from "@supabase/supabase-js";
+import { supabaseConfig } from "./config";
+
+export const supabase = createClient(supabaseConfig.url, supabaseConfig.anonKey, {
+  auth: {
+    flowType: "pkce",
+    storageKey: "valtor.auth",
+    persistSession: true,
+    autoRefreshToken: true,
+    detectSessionInUrl: true,
+  },
+  global: {
+    headers: {
+      "X-Client-Info": "valtor-web",
+    },
+  },
+});
+</file>
+
+<file path="src/integrations/supabase/config.ts">
+const rawSupabaseUrl = import.meta.env.VITE_SUPABASE_URL?.trim() ?? "";
+const rawSupabaseAnonKey = import.meta.env.VITE_SUPABASE_ANON_KEY?.trim() ?? "";
+
+function getConfigError() {
+  if (!rawSupabaseUrl || !rawSupabaseAnonKey) {
+    return "Supabase is not configured. Add VITE_SUPABASE_URL and VITE_SUPABASE_ANON_KEY to .env.local.";
+  }
+
+  try {
+    const url = new URL(rawSupabaseUrl);
+
+    if (!["https:", "http:"].includes(url.protocol)) {
+      return "VITE_SUPABASE_URL must start with https://.";
+    }
+
+    if (url.hostname === "placeholder-project.supabase.co") {
+      return "VITE_SUPABASE_URL is still using the placeholder project.";
+    }
+  } catch {
+    return "VITE_SUPABASE_URL is not a valid URL.";
+  }
+
+  if (rawSupabaseAnonKey.length < 20 || rawSupabaseAnonKey === "placeholder-anon-key") {
+    return "VITE_SUPABASE_ANON_KEY is missing or still using a placeholder value.";
+  }
+
+  return null;
+}
+
+export const supabaseConfig = {
+  url: rawSupabaseUrl || "https://not-configured.supabase.co",
+  anonKey: rawSupabaseAnonKey || "not-configured",
+  error: getConfigError(),
+};
+
+export const isSupabaseConfigured = supabaseConfig.error === null;
+</file>
+
+<file path="src/main.tsx">
+import React from "react";
+import ReactDOM from "react-dom/client";
+import { RouterProvider, createRouter } from "@tanstack/react-router";
+import { routeTree } from "./routeTree.gen";
+import "./styles.css";
+
+const rootElement = document.getElementById("root");
+
+if (!rootElement) {
+  throw new Error("Valtor could not start because #root was not found.");
+}
+
+const router = createRouter({
+  routeTree,
+  defaultPreload: "intent",
+  context: {},
+});
+
+declare module "@tanstack/react-router" {
+  interface Register {
+    router: typeof router;
+  }
+}
+
+ReactDOM.createRoot(rootElement).render(
+  <React.StrictMode>
+    <RouterProvider router={router} />
+  </React.StrictMode>,
+);
+</file>
+
+<file path="src/routes/__root.tsx">
+import { createRootRoute, Outlet } from "@tanstack/react-router";
+import "../styles.css";
+
+export const Route = createRootRoute({
+  head: () => ({
+    meta: [
+      { charSet: "utf-8" },
+      { name: "viewport", content: "width=device-width, initial-scale=1" },
+      { title: "Valtor" },
+      {
+        name: "description",
+        content: "Construction bid intelligence for tender risk, pipeline, and audit workflows.",
+      },
+    ],
+  }),
+  component: () => <Outlet />,
+});
+</file>
+
+<file path="src/routes/_authenticated.tsx">
+import { createFileRoute, Outlet, redirect } from "@tanstack/react-router";
+import { AppShell } from "@/components/AppShell";
+import { supabase } from "@/integrations/supabase/client";
+import { isSupabaseConfigured } from "@/integrations/supabase/config";
+
+export const Route = createFileRoute("/_authenticated")({
+  beforeLoad: async ({ location }) => {
+    if (!isSupabaseConfigured) {
+      throw redirect({
+        to: "/auth",
+        search: {
+          redirect: location.href,
+          reason: "config",
+        },
+      });
+    }
+
+    const redirectToAuth = (reason?: "network" | "session") => {
+      throw redirect({
+        to: "/auth",
+        search: {
+          redirect: location.href,
+          ...(reason ? { reason } : {}),
+        },
+      });
+    };
+
+    let sessionUserEmail: string | undefined;
+
+    try {
+      const { data: sessionData, error: sessionError } = await supabase.auth.getSession();
+
+      if (sessionError || !sessionData.session) {
+        redirectToAuth("session");
+      }
+
+      const { data: userData, error: userError } = await supabase.auth.getUser();
+
+      if (userError || !userData.user) {
+        await supabase.auth.signOut({ scope: "local" });
+        redirectToAuth("session");
+      }
+
+      sessionUserEmail = userData.user.email ?? sessionData.session.user.email;
+    } catch (error) {
+      if (error instanceof Response) throw error;
+      redirectToAuth("network");
+    }
+
+    return {
+      userEmail: sessionUserEmail,
+    };
+  },
+  component: AuthenticatedLayout,
+});
+
+function AuthenticatedLayout() {
+  const { userEmail } = Route.useRouteContext();
+
+  return (
+    <AppShell userEmail={userEmail}>
+      <Outlet />
+    </AppShell>
+  );
+}
+</file>
+
+<file path="src/routes/_authenticated/audit.tsx">
+import { createFileRoute, useSearch } from "@tanstack/react-router";
+import { useCallback, useEffect, useState } from "react";
+import { supabase } from "@/integrations/supabase/client";
+import {
+  Upload,
+  FileText,
+  Archive,
+  Sheet,
+  FileType,
+  File,
+  Loader2,
+  AlertTriangle,
+  CheckCircle2,
+  XCircle,
+  X,
+  Sparkles,
+  Download,
+} from "lucide-react";
+import * as XLSX from "xlsx";
+
+export const Route = createFileRoute("/_authenticated/audit")({
+  head: () => ({ meta: [{ title: "Bid Audit — Valtor" }] }),
+  component: AuditPage,
+});
+
+type Analysis = {
+  executive_summary?: string;
+  risk_score?: number;
+  recommendation?: string;
+  financial_assessment?: {
+    estimated_cost_etb?: number;
+    projected_margin_pct?: number;
+    margin_gap_pct?: number;
+    cashflow_risk?: string;
+  };
+  risk_matrix?: Array<{ category: string; severity: string; likelihood: number; impact: string }>;
+  evaluation_matrix?: Array<{ criterion: string; score: number; weight: number; notes: string }>;
+  key_risks?: string[];
+  opportunities?: string[];
+  compliance_flags?: string[];
+};
+
+function fileIcon(name: string) {
+  const ext = name.split(".").pop()?.toLowerCase();
+  const cls = { width: 16, height: 16 };
+  if (ext === "pdf") return <FileText {...cls} color="#B91C1C" />;
+  if (ext === "zip") return <Archive {...cls} color="#B45309" />;
+  if (ext === "xlsx" || ext === "xls") return <Sheet {...cls} color="#15803D" />;
+  if (ext === "docx" || ext === "doc") return <FileType {...cls} color="#1D4ED8" />;
+  return <File {...cls} color="#6B7280" />;
+}
+
+function fmtSize(bytes: number) {
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(0)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+function truncName(name: string, max = 40) {
+  return name.length > max ? name.slice(0, max - 1) + "…" : name;
+}
+
+function fileToBase64(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const r = new FileReader();
+    r.onload = () => resolve((r.result as string).split(",")[1] ?? "");
+    r.onerror = reject;
+    r.readAsDataURL(file);
+  });
+}
+
+function exportToExcel(analysis: Analysis, projectName: string) {
+  const wb = XLSX.utils.book_new();
+
+  // Sheet 1 — Evaluation Matrix
+  if (Array.isArray(analysis.evaluation_matrix) && analysis.evaluation_matrix.length > 0) {
+    const evalData = [
+      ["Criterion", "Score (0–10)", "Weight (%)", "Weighted Score", "Notes"],
+      ...analysis.evaluation_matrix.map((r) => [
+        r.criterion,
+        r.score,
+        `${(r.weight * 100).toFixed(0)}%`,
+        (r.score * r.weight).toFixed(2),
+        r.notes,
+      ]),
+    ];
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(evalData), "Evaluation Matrix");
+  }
+
+  // Sheet 2 — Risk Matrix
+  if (Array.isArray(analysis.risk_matrix) && analysis.risk_matrix.length > 0) {
+    const riskData = [
+      ["Category", "Severity", "Likelihood (%)", "Impact"],
+      ...analysis.risk_matrix.map((r) => [r.category, r.severity, r.likelihood, r.impact]),
+    ];
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(riskData), "Risk Matrix");
+  }
+
+  // Sheet 3 — BoQ Skeleton
+  const boqData = [
+    ["#", "Item", "Description", "Unit", "Qty", "Unit Rate (ETB)", "Total (ETB)"],
+    [1, "Mobilisation", "Site mobilisation & preliminary works", "LS", 1, 2_500_000, 2_500_000],
+    [2, "Earthworks", "Bulk excavation & fill", "m³", 8_400, 850, 7_140_000],
+    [3, "Concrete Works", "Foundation concrete C25/30", "m³", 1_200, 12_500, 15_000_000],
+    [4, "Reinforcement", "Grade 60 rebar supply & fix", "ton", 180, 85_000, 15_300_000],
+    [5, "Masonry", "Block wall construction", "m²", 3_600, 4_200, 15_120_000],
+    [6, "Roofing", "IBR sheet roofing system", "m²", 2_100, 6_800, 14_280_000],
+    [7, "MEP", "Mechanical, electrical & plumbing", "LS", 1, 18_000_000, 18_000_000],
+    [8, "Finishes", "Internal & external finishes", "m²", 5_400, 3_500, 18_900_000],
+    ["", "", "", "", "", "TOTAL", { f: "SUM(G2:G9)" }],
+  ];
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(boqData), "BoQ Skeleton");
+
+  const date = new Date().toISOString().slice(0, 10);
+  const safeName = projectName.replace(/[^a-zA-Z0-9]/g, "_").slice(0, 30);
+  XLSX.writeFile(wb, `Valtor_BoQ_${safeName}_${date}.xlsx`);
+}
+
+function severityBadge(s: string) {
+  const k = s?.toUpperCase();
+  if (k === "CRITICAL") return <span className="badge badge-red">Critical</span>;
+  if (k === "HIGH") return <span className="badge badge-red" style={{ background: "#FEF2F2", color: "#B91C1C" }}>High</span>;
+  if (k === "MEDIUM") return <span className="badge badge-amber">Medium</span>;
+  return <span className="badge badge-green">Low</span>;
+}
+
+function recBadge(r?: string) {
+  if (r === "PROCEED") return <span className="badge badge-green" style={{ fontSize: "0.75rem", padding: "0.3rem 0.75rem" }}>✓ Proceed</span>;
+  if (r === "DECLINE") return <span className="badge badge-red" style={{ fontSize: "0.75rem", padding: "0.3rem 0.75rem" }}>✗ Decline</span>;
+  return <span className="badge badge-amber" style={{ fontSize: "0.75rem", padding: "0.3rem 0.75rem" }}>⚠ Proceed with Caution</span>;
+}
+
+function AuditPage() {
+  const search = useSearch({ from: "/_authenticated/audit" });
+  const prefilledProject = (search as any)?.project ?? "";
+
+  const [files, setFiles] = useState<File[]>([]);
+  const [projectName, setProjectName] = useState(prefilledProject);
+  const [contractValue, setContractValue] = useState("");
+  const [targetMargin, setTargetMargin] = useState("15");
+  const [loading, setLoading] = useState(false);
+  const [analysis, setAnalysis] = useState<Analysis | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [dragOver, setDragOver] = useState(false);
+
+  useEffect(() => {
+    if (prefilledProject) setProjectName(prefilledProject);
+  }, [prefilledProject]);
+
+  const addFiles = useCallback((incoming: FileList | null) => {
+    if (!incoming) return;
+    setFiles((prev) => {
+      const existing = new Set(prev.map((f) => f.name));
+      const novel = Array.from(incoming).filter((f) => !existing.has(f.name));
+      return [...prev, ...novel];
+    });
+  }, []);
+
+  const onDrop = useCallback(
+    (e: React.DragEvent) => {
+      e.preventDefault();
+      setDragOver(false);
+      addFiles(e.dataTransfer.files);
+    },
+    [addFiles],
+  );
+
+  const removeFile = (index: number) => {
+    setFiles((prev) => prev.filter((_, i) => i !== index));
+  };
+
+  const runAudit = async () => {
+    setError(null);
+    setAnalysis(null);
+    if (!projectName.trim()) return setError("Project name is required.");
+    if (!contractValue) return setError("Contract value is required.");
+    const apiKey = import.meta.env.VITE_GEMINI_API_KEY as string | undefined;
+    if (!apiKey) return setError("VITE_GEMINI_API_KEY is not configured in environment.");
+    setLoading(true);
+
+    try {
+      const firstPdf = files.find((f) => f.name.toLowerCase().endsWith(".pdf"));
+      const fileBase64 = firstPdf ? await fileToBase64(firstPdf) : undefined;
+      const fileNames = files.length > 0 ? files.map((f) => f.name).join(", ") : "n/a";
+
+      const systemPrompt = `You are Valtor AI, an executive construction tender risk analyst for the Ethiopian market.
+Analyze the provided tender data and return ONLY a strict JSON object — no markdown, no commentary.
+Required shape:
+{
+  "executive_summary": string,
+  "risk_score": number (0–100, higher = more risk),
+  "recommendation": "PROCEED" | "PROCEED_WITH_CAUTION" | "DECLINE",
+  "financial_assessment": {
+    "estimated_cost_etb": number,
+    "projected_margin_pct": number,
+    "margin_gap_pct": number,
+    "cashflow_risk": "LOW" | "MEDIUM" | "HIGH"
+  },
+  "risk_matrix": [
+    { "category": string, "severity": "LOW"|"MEDIUM"|"HIGH"|"CRITICAL", "likelihood": number (0–100), "impact": string }
+  ],
+  "evaluation_matrix": [
+    { "criterion": string, "score": number (0–10), "weight": number (0–1), "notes": string }
+  ],
+  "key_risks": string[],
+  "opportunities": string[],
+  "compliance_flags": string[]
+}`;
+
+      const userText = `Project: ${projectName}
+Files submitted: ${fileNames}
+Contract Value: ${contractValue} ETB
+Target Margin: ${targetMargin}%
+
+Perform a thorough executive risk audit: assess financial viability against the contract value and target margin, identify key risks and compliance concerns, and produce a weighted evaluation matrix.`;
+
+      const parts: any[] = [{ text: userText }];
+      if (fileBase64 && firstPdf) {
+        parts.push({ inline_data: { mime_type: "application/pdf", data: fileBase64 } });
+      }
+
+      const res = await fetch(
+        `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${apiKey}`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            system_instruction: { parts: [{ text: systemPrompt }] },
+            contents: [{ role: "user", parts }],
+            generationConfig: { response_mime_type: "application/json", temperature: 0.15 },
+          }),
+        },
+      );
+
+      if (!res.ok) {
+        const txt = await res.text();
+        throw new Error(`API error (${res.status}): ${txt.slice(0, 200)}`);
+      }
+
+      const data = await res.json();
+      let text = data?.candidates?.[0]?.content?.parts?.[0]?.text ?? "{}";
+      text = text.replace(/```json/gi, "").replace(/```/g, "").trim();
+
+      let a: Analysis;
+      try {
+        a = JSON.parse(text) as Analysis;
+      } catch {
+        throw new Error("Failed to parse AI response as JSON. Check your Gemini API key and quota.");
+      }
+      setAnalysis(a);
+
+      const { data: userData } = await supabase.auth.getUser();
+      if (userData.user) {
+        await supabase.from("audits").insert({
+          user_id: userData.user.id,
+          project_name: projectName,
+          file_name: files[0]?.name ?? null,
+          contract_value: Number(contractValue),
+          target_margin: Number(targetMargin),
+          risk_score: a.risk_score ?? null,
+          status: "completed",
+          analysis: a,
+        });
+      }
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  return (
+    <div>
+      <div className="page-header">
+        <div className="page-title">Bid Audit</div>
+        <div className="page-subtitle">Upload tender documents, configure financials, and generate a structured AI risk evaluation.</div>
+      </div>
+
+      <div style={{ display: "grid", gridTemplateColumns: "340px 1fr", gap: "1.5rem", alignItems: "start" }}>
+        {/* Left — Input panel */}
+        <div className="panel" style={{ padding: "1.25rem" }}>
+          <div style={{ display: "flex", flexDirection: "column", gap: "1rem" }}>
+            {/* Project name */}
+            <div>
+              <label className="section-label">Project name</label>
+              <input
+                value={projectName}
+                onChange={(e) => setProjectName(e.target.value)}
+                className="field-input"
+                placeholder="Addis Ring Road Phase III"
+              />
+            </div>
+
+            {/* Dropzone */}
+            <div>
+              <label className="section-label">Documents</label>
+              <div
+                className={`dropzone${dragOver ? " active" : ""}`}
+                onDragOver={(e) => { e.preventDefault(); setDragOver(true); }}
+                onDragLeave={() => setDragOver(false)}
+                onDrop={onDrop}
+              >
+                <input
+                  id="file-input"
+                  type="file"
+                  accept=".pdf,.zip,.xlsx,.xls,.docx,.doc"
+                  multiple
+                  className="hidden"
+                  onChange={(e) => addFiles(e.target.files)}
+                />
+                <label htmlFor="file-input" style={{ cursor: "pointer", display: "block" }}>
+                  <Upload size={20} color="#9CA3AF" style={{ margin: "0 auto 0.5rem" }} />
+                  <div style={{ fontSize: "0.8125rem", fontWeight: 500, color: "#374151" }}>
+                    Drop files or click to browse
+                  </div>
+                  <div style={{ fontSize: "0.6875rem", color: "#9CA3AF", marginTop: "0.25rem" }}>
+                    PDF, ZIP, XLSX, DOCX accepted
+                  </div>
+                </label>
+              </div>
+
+              {/* File queue */}
+              {files.length > 0 && (
+                <div className="panel" style={{ marginTop: "0.625rem", overflow: "hidden" }}>
+                  {files.map((f, i) => (
+                    <div className="file-row" key={i}>
+                      <div style={{ flexShrink: 0 }}>{fileIcon(f.name)}</div>
+                      <div style={{ flex: 1, minWidth: 0 }}>
+                        <div style={{ fontSize: "0.75rem", fontWeight: 500, color: "#0D1117", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                          {truncName(f.name)}
+                        </div>
+                        <div style={{ fontSize: "0.625rem", color: "#9CA3AF" }}>{fmtSize(f.size)}</div>
+                      </div>
+                      <button
+                        onClick={() => removeFile(i)}
+                        className="btn-ghost"
+                        style={{ padding: "0.25rem", flexShrink: 0 }}
+                      >
+                        <X size={13} />
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+
+            {/* Contract value */}
+            <div>
+              <label className="section-label">Contract value (ETB)</label>
+              <input
+                type="number"
+                value={contractValue}
+                onChange={(e) => setContractValue(e.target.value)}
+                className="field-input"
+                placeholder="125,000,000"
+              />
+            </div>
+
+            {/* Target margin */}
+            <div>
+              <label className="section-label">Target margin (%)</label>
+              <input
+                type="number"
+                step="0.1"
+                value={targetMargin}
+                onChange={(e) => setTargetMargin(e.target.value)}
+                className="field-input"
+              />
+            </div>
+
+            {error && (
+              <div style={{ background: "#FEF2F2", border: "1px solid #FECACA", borderRadius: "4px", padding: "0.625rem 0.875rem", fontSize: "0.8125rem", color: "#B91C1C" }}>
+                {error}
+              </div>
+            )}
+
+            <button onClick={runAudit} disabled={loading} className="btn-primary" style={{ width: "100%", justifyContent: "center", padding: "0.625rem" }}>
+              {loading ? (
+                <><Loader2 size={14} className="animate-spin" /> Analysing…</>
+              ) : (
+                <><Sparkles size={14} /> Run Audit{files.length > 0 ? ` (${files.length} file${files.length > 1 ? "s" : ""})` : ""}</>
+              )}
+            </button>
+          </div>
+        </div>
+
+        {/* Right — Results */}
+        <div style={{ minHeight: "60vh" }}>
+          {!analysis && !loading && (
+            <div className="panel" style={{ padding: "4rem 2rem", textAlign: "center", color: "#9CA3AF" }}>
+              <Sparkles size={32} style={{ margin: "0 auto 1rem", opacity: 0.3 }} />
+              <div style={{ fontWeight: 600, color: "#374151", fontSize: "0.9375rem", marginBottom: "0.375rem" }}>
+                Ready for analysis
+              </div>
+              <div style={{ fontSize: "0.8125rem" }}>Configure a project and click Run Audit to generate your risk report.</div>
+            </div>
+          )}
+
+          {loading && (
+            <div className="panel" style={{ padding: "4rem 2rem", textAlign: "center" }}>
+              <Loader2 size={28} className="animate-spin" color="#0F2240" style={{ margin: "0 auto 1rem" }} />
+              <div style={{ fontWeight: 600, color: "#0D1117", fontSize: "0.9375rem" }}>Running AI analysis…</div>
+              <div style={{ fontSize: "0.8125rem", color: "#6B7280", marginTop: "0.375rem" }}>Evaluating tender package against financial parameters</div>
+            </div>
+          )}
+
+          {analysis && (
+            <Results
+              analysis={analysis}
+              projectName={projectName}
+              onExport={() => exportToExcel(analysis, projectName)}
+            />
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function Results({ analysis, projectName, onExport }: { analysis: Analysis; projectName: string; onExport: () => void }) {
+  const r = Number(analysis.risk_score) || 0;
+  const riskClass = r < 35 ? "risk-low" : r < 65 ? "risk-medium" : "risk-high";
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: "1rem" }}>
+      {/* Top actions bar */}
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+        <div style={{ fontSize: "0.8125rem", color: "#6B7280" }}>
+          Analysis for <strong style={{ color: "#0D1117" }}>{projectName}</strong>
+        </div>
+        <button onClick={onExport} className="btn-secondary">
+          <Download size={13} />
+          Export BoQ & Risk Matrix
+        </button>
+      </div>
+
+      {/* Summary + Risk score */}
+      <div style={{ display: "grid", gridTemplateColumns: "1fr auto", gap: "1rem" }}>
+        <div className="panel" style={{ padding: "1.25rem" }}>
+          <div className="section-label">Executive Summary</div>
+          <p style={{ fontSize: "0.8125rem", lineHeight: 1.6, color: "#374151" }}>
+            {analysis.executive_summary ?? "—"}
+          </p>
+        </div>
+        <div className="panel" style={{ padding: "1.25rem", textAlign: "center", minWidth: "140px", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center" }}>
+          <div className="section-label">Risk Score</div>
+          <div className={riskClass} style={{ fontSize: "3rem", fontWeight: 800, letterSpacing: "-0.04em", lineHeight: 1 }}>
+            {Math.round(r)}
+          </div>
+          <div style={{ fontSize: "0.6875rem", color: "#9CA3AF", marginBottom: "0.75rem" }}>out of 100</div>
+          {analysis.recommendation && recBadge(analysis.recommendation)}
+        </div>
+      </div>
+
+      {/* Financial assessment */}
+      {analysis.financial_assessment && typeof analysis.financial_assessment === "object" && (
+        <div className="panel" style={{ padding: "1.25rem" }}>
+          <div className="section-label">Financial Assessment</div>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: "1.25rem" }}>
+            {[
+              { label: "Estimated Cost", value: analysis.financial_assessment.estimated_cost_etb ? `${Math.round(Number(analysis.financial_assessment.estimated_cost_etb)).toLocaleString()} ETB` : "—" },
+              { label: "Projected Margin", value: analysis.financial_assessment.projected_margin_pct != null ? `${Number(analysis.financial_assessment.projected_margin_pct)}%` : "—" },
+              { label: "Margin Gap", value: analysis.financial_assessment.margin_gap_pct != null ? `${Number(analysis.financial_assessment.margin_gap_pct)}%` : "—" },
+              { label: "Cashflow Risk", value: String(analysis.financial_assessment.cashflow_risk ?? "—") },
+            ].map(({ label, value }) => (
+              <div key={label}>
+                <div style={{ fontSize: "0.6875rem", color: "#9CA3AF", marginBottom: "0.25rem" }}>{label}</div>
+                <div style={{ fontSize: "1rem", fontWeight: 600, color: "#0D1117" }}>{value}</div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Risk matrix */}
+      {Array.isArray(analysis.risk_matrix) && analysis.risk_matrix.length > 0 && (
+        <div className="panel" style={{ overflow: "hidden" }}>
+          <div style={{ padding: "1rem 1.25rem", borderBottom: "1px solid #E4E7EC", display: "flex", alignItems: "center", gap: "0.5rem" }}>
+            <AlertTriangle size={13} color="#B45309" />
+            <div style={{ fontWeight: 600, fontSize: "0.8125rem" }}>Risk Matrix</div>
+          </div>
+          <table className="data-table">
+            <thead>
+              <tr>
+                <th>Severity</th>
+                <th>Category</th>
+                <th>Impact</th>
+                <th className="text-right">Likelihood</th>
+              </tr>
+            </thead>
+            <tbody>
+              {analysis.risk_matrix.map((row, i) => (
+                <tr key={i}>
+                  <td>{severityBadge(String(row.severity || ""))}</td>
+                  <td style={{ fontWeight: 500 }}>{String(row.category || "—")}</td>
+                  <td className="muted">{String(row.impact || "—")}</td>
+                  <td className="text-right muted">{Number(row.likelihood) || 0}%</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      {/* Evaluation matrix */}
+      {Array.isArray(analysis.evaluation_matrix) && analysis.evaluation_matrix.length > 0 && (
+        <div className="panel" style={{ overflow: "hidden" }}>
+          <div style={{ padding: "1rem 1.25rem", borderBottom: "1px solid #E4E7EC" }}>
+            <div style={{ fontWeight: 600, fontSize: "0.8125rem" }}>Evaluation Matrix</div>
+          </div>
+          <table className="data-table">
+            <thead>
+              <tr>
+                <th>Criterion</th>
+                <th>Notes</th>
+                <th className="text-right">Score</th>
+                <th className="text-right">Weight</th>
+                <th className="text-right">Weighted</th>
+              </tr>
+            </thead>
+            <tbody>
+              {analysis.evaluation_matrix.map((row, i) => (
+                <tr key={i}>
+                  <td style={{ fontWeight: 500 }}>{String(row.criterion || "—")}</td>
+                  <td className="muted">{String(row.notes || "")}</td>
+                  <td className="text-right">{Number(row.score) || 0}/10</td>
+                  <td className="text-right muted">{(Number(row.weight || 0) * 100).toFixed(0)}%</td>
+                  <td className="text-right" style={{ fontWeight: 600, color: "#0F2240" }}>
+                    {(Number(row.score || 0) * Number(row.weight || 0)).toFixed(2)}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      {/* Risks & Opportunities */}
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "1rem" }}>
+        {Array.isArray(analysis.key_risks) && analysis.key_risks.length > 0 && (
+          <div className="panel" style={{ padding: "1.25rem" }}>
+            <div style={{ display: "flex", alignItems: "center", gap: "0.375rem", marginBottom: "0.75rem" }}>
+              <XCircle size={13} color="#B91C1C" />
+              <div style={{ fontSize: "0.6875rem", fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.07em", color: "#B91C1C" }}>Key Risks</div>
+            </div>
+            <ul style={{ display: "flex", flexDirection: "column", gap: "0.5rem" }}>
+              {analysis.key_risks.map((it, i) => (
+                <li key={i} style={{ display: "flex", gap: "0.5rem", fontSize: "0.8125rem" }}>
+                  <span style={{ color: "#B91C1C", flexShrink: 0 }}>•</span>
+                  <span style={{ color: "#374151" }}>{String(it)}</span>
+                </li>
+              ))}
+            </ul>
+          </div>
+        )}
+        {Array.isArray(analysis.opportunities) && analysis.opportunities.length > 0 && (
+          <div className="panel" style={{ padding: "1.25rem" }}>
+            <div style={{ display: "flex", alignItems: "center", gap: "0.375rem", marginBottom: "0.75rem" }}>
+              <CheckCircle2 size={13} color="#15803D" />
+              <div style={{ fontSize: "0.6875rem", fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.07em", color: "#15803D" }}>Opportunities</div>
+            </div>
+            <ul style={{ display: "flex", flexDirection: "column", gap: "0.5rem" }}>
+              {analysis.opportunities.map((it, i) => (
+                <li key={i} style={{ display: "flex", gap: "0.5rem", fontSize: "0.8125rem" }}>
+                  <span style={{ color: "#15803D", flexShrink: 0 }}>•</span>
+                  <span style={{ color: "#374151" }}>{String(it)}</span>
+                </li>
+              ))}
+            </ul>
+          </div>
+        )}
+      </div>
+
+      {/* Compliance flags */}
+      {Array.isArray(analysis.compliance_flags) && analysis.compliance_flags.length > 0 && (
+        <div className="panel" style={{ padding: "1.25rem" }}>
+          <div style={{ display: "flex", alignItems: "center", gap: "0.375rem", marginBottom: "0.75rem" }}>
+            <AlertTriangle size={13} color="#B45309" />
+            <div style={{ fontSize: "0.6875rem", fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.07em", color: "#B45309" }}>Compliance Flags</div>
+          </div>
+          <ul style={{ display: "flex", flexDirection: "column", gap: "0.5rem" }}>
+            {analysis.compliance_flags.map((it, i) => (
+              <li key={i} style={{ display: "flex", gap: "0.5rem", fontSize: "0.8125rem" }}>
+                <span style={{ color: "#B45309", flexShrink: 0 }}>⚠</span>
+                <span style={{ color: "#374151" }}>{String(it)}</span>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+    </div>
+  );
+}
+</file>
+
+<file path="src/routes/_authenticated/history.tsx">
+import { createFileRoute } from "@tanstack/react-router";
+import { useEffect, useRef, useState } from "react";
+import { supabase } from "@/integrations/supabase/client";
+import {
+  Trash2,
+  FileText,
+  ChevronDown,
+  X,
+  Clock,
+  History,
+} from "lucide-react";
+
+export const Route = createFileRoute("/_authenticated/history")({
+  head: () => ({ meta: [{ title: "Audit History — Valtor" }] }),
+  component: HistoryPage,
+});
+
+type WorkflowStatus = "Draft" | "In Review" | "Approved" | "Rejected";
+
+type AuditRow = {
+  id: string;
+  project_name: string;
+  file_name: string | null;
+  contract_value: number;
+  target_margin: number;
+  risk_score: number | null;
+  status: string;
+  analysis: any;
+  created_at: string;
+};
+
+function workflowBadge(s: WorkflowStatus) {
+  if (s === "Draft") return <span className="badge badge-slate">Draft</span>;
+  if (s === "In Review") return <span className="badge badge-blue">In Review</span>;
+  if (s === "Approved") return <span className="badge badge-green">Approved</span>;
+  return <span className="badge badge-red">Rejected</span>;
+}
+
+function recBadge(rec?: string) {
+  if (!rec) return <span className="badge badge-slate">—</span>;
+  if (rec === "PROCEED") return <span className="badge badge-green">Proceed</span>;
+  if (rec === "DECLINE") return <span className="badge badge-red">Decline</span>;
+  return <span className="badge badge-amber">Caution</span>;
+}
+
+function riskClass(score: number | null) {
+  if (score === null) return "";
+  if (score < 35) return "risk-low";
+  if (score < 65) return "risk-medium";
+  return "risk-high";
+}
+
+// Minimal custom dropdown for the actions menu (no Radix dep needed)
+function ActionsMenu({ onAction }: { onAction: (action: string) => void }) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    const handler = (e: MouseEvent) => {
+      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
+    };
+    document.addEventListener("mousedown", handler);
+    return () => document.removeEventListener("mousedown", handler);
+  }, []);
+
+  const items = [
+    { label: "Request Director Approval", value: "In Review" },
+    { label: "Assign to Estimator", value: "In Review" },
+    { label: "Mark Approved", value: "Approved" },
+    { label: "Reject", value: "Rejected" },
+  ];
+
+  return (
+    <div ref={ref} style={{ position: "relative", display: "inline-block" }}>
+      <button
+        className="btn-ghost"
+        onClick={() => setOpen((v) => !v)}
+        style={{ padding: "0.3rem 0.5rem", gap: "0.2rem" }}
+      >
+        Actions <ChevronDown size={11} />
+      </button>
+      {open && (
+        <div
+          className="panel"
+          style={{
+            position: "absolute",
+            right: 0,
+            top: "calc(100% + 4px)",
+            zIndex: 100,
+            minWidth: "195px",
+            padding: "0.25rem",
+            boxShadow: "0 4px 12px rgba(0,0,0,0.1)",
+          }}
+        >
+          {items.map((item) => (
+            <button
+              key={item.label}
+              onClick={() => { onAction(item.value); setOpen(false); }}
+              style={{
+                display: "block",
+                width: "100%",
+                textAlign: "left",
+                padding: "0.5rem 0.75rem",
+                fontSize: "0.8125rem",
+                color: item.value === "Rejected" ? "#B91C1C" : "#374151",
+                background: "none",
+                border: "none",
+                borderRadius: "3px",
+                cursor: "pointer",
+                transition: "background 0.08s",
+              }}
+              onMouseEnter={(e) => (e.currentTarget.style.background = "#F7F8FA")}
+              onMouseLeave={(e) => (e.currentTarget.style.background = "none")}
+            >
+              {item.label}
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function HistoryPage() {
+  const [rows, setRows] = useState<AuditRow[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [selected, setSelected] = useState<AuditRow | null>(null);
+  const [workflow, setWorkflow] = useState<Record<string, WorkflowStatus>>({});
+
+  const load = () => {
+    setLoading(true);
+    supabase
+      .from("audits")
+      .select("*")
+      .order("created_at", { ascending: false })
+      .then(({ data }) => {
+        const rows = (data as AuditRow[]) ?? [];
+        setRows(rows);
+        setWorkflow((prev) => {
+          const next = { ...prev };
+          rows.forEach((r) => { if (!next[r.id]) next[r.id] = "Draft"; });
+          return next;
+        });
+        setLoading(false);
+      });
+  };
+
+  useEffect(load, []);
+
+  const remove = async (id: string) => {
+    await supabase.from("audits").delete().eq("id", id);
+    if (selected?.id === id) setSelected(null);
+    load();
+  };
+
+  const setStatus = (id: string, status: string) => {
+    setWorkflow((prev) => ({ ...prev, [id]: status as WorkflowStatus }));
+  };
+
+  return (
+    <div>
+      <div className="page-header">
+        <div className="page-title">Audit History</div>
+        <div className="page-subtitle">Complete record of every tender evaluated in your workspace</div>
+      </div>
+
+      <div className="panel" style={{ overflow: "hidden" }}>
+        {loading ? (
+          <div className="empty-state">
+            <Clock size={24} style={{ margin: "0 auto 0.5rem", opacity: 0.3 }} />
+            <p>Loading records…</p>
+          </div>
+        ) : rows.length === 0 ? (
+          <div className="empty-state">
+            <History size={28} style={{ margin: "0 auto 0.5rem", opacity: 0.25 }} />
+            <p>No audits recorded yet. Run your first bid audit to see it here.</p>
+          </div>
+        ) : (
+          <div style={{ overflowX: "auto" }}>
+            <table className="data-table">
+              <thead>
+                <tr>
+                  <th>Project</th>
+                  <th>Document</th>
+                  <th className="text-right">Value (ETB)</th>
+                  <th className="text-right">Margin</th>
+                  <th className="text-right">Risk</th>
+                  <th>AI Recommendation</th>
+                  <th>Approval Status</th>
+                  <th className="text-right">Date</th>
+                  <th style={{ width: "120px" }}>Actions</th>
+                </tr>
+              </thead>
+              <tbody>
+                {rows.map((r) => (
+                  <tr
+                    key={r.id}
+                    style={{ cursor: "pointer" }}
+                    onClick={() => setSelected(r)}
+                  >
+                    <td style={{ fontWeight: 500 }}>{r.project_name}</td>
+                    <td className="muted">
+                      {r.file_name ? (
+                        <span style={{ display: "inline-flex", alignItems: "center", gap: "0.25rem" }}>
+                          <FileText size={12} />
+                          {r.file_name.length > 22 ? r.file_name.slice(0, 22) + "…" : r.file_name}
+                        </span>
+                      ) : "—"}
+                    </td>
+                    <td className="text-right muted">{Number(r.contract_value).toLocaleString()}</td>
+                    <td className="text-right">{r.target_margin}%</td>
+                    <td className={`text-right ${riskClass(r.risk_score)}`} style={{ fontWeight: 600 }}>
+                      {r.risk_score != null ? Math.round(Number(r.risk_score)) : "—"}
+                    </td>
+                    <td>{recBadge(r.analysis?.recommendation)}</td>
+                    <td onClick={(e) => e.stopPropagation()}>
+                      {workflowBadge(workflow[r.id] ?? "Draft")}
+                    </td>
+                    <td className="text-right muted" style={{ whiteSpace: "nowrap" }}>
+                      {new Date(r.created_at).toLocaleDateString("en-GB", { day: "2-digit", month: "short", year: "numeric" })}
+                    </td>
+                    <td onClick={(e) => e.stopPropagation()}>
+                      <div style={{ display: "flex", alignItems: "center", gap: "0.375rem", justifyContent: "flex-end" }}>
+                        <ActionsMenu onAction={(v) => setStatus(r.id, v)} />
+                        <button
+                          onClick={() => remove(r.id)}
+                          className="btn-ghost"
+                          style={{ padding: "0.3rem", color: "#9CA3AF" }}
+                          title="Delete"
+                        >
+                          <Trash2 size={13} />
+                        </button>
+                      </div>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
+
+      {/* Detail modal */}
+      {selected && (
+        <div
+          style={{
+            position: "fixed", inset: 0, zIndex: 200,
+            display: "flex", alignItems: "center", justifyContent: "center",
+            background: "rgba(0,0,0,0.45)", backdropFilter: "blur(4px)",
+            padding: "1rem",
+          }}
+          onClick={() => setSelected(null)}
+        >
+          <div
+            className="panel"
+            style={{ maxWidth: "680px", width: "100%", maxHeight: "85vh", overflowY: "auto", padding: "1.75rem" }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: "1.25rem" }}>
+              <div>
+                <div style={{ fontWeight: 700, fontSize: "1.0625rem", color: "#0D1117", letterSpacing: "-0.02em" }}>
+                  {selected.project_name}
+                </div>
+                <div style={{ fontSize: "0.75rem", color: "#9CA3AF", marginTop: "0.2rem" }}>
+                  {new Date(selected.created_at).toLocaleString("en-GB", { dateStyle: "medium", timeStyle: "short" })}
+                </div>
+              </div>
+              <button onClick={() => setSelected(null)} className="btn-ghost" style={{ padding: "0.375rem" }}>
+                <X size={16} />
+              </button>
+            </div>
+
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: "1rem", marginBottom: "1.25rem" }}>
+              {[
+                { label: "Contract Value", value: `${Number(selected.contract_value).toLocaleString()} ETB` },
+                { label: "Target Margin", value: `${selected.target_margin}%` },
+                { label: "Risk Score", value: selected.risk_score != null ? `${Math.round(Number(selected.risk_score))}/100` : "—" },
+              ].map(({ label, value }) => (
+                <div key={label} className="stat-card" style={{ padding: "0.875rem" }}>
+                  <div className="stat-label">{label}</div>
+                  <div style={{ fontSize: "1.125rem", fontWeight: 700, color: "#0D1117" }}>{value}</div>
+                </div>
+              ))}
+            </div>
+
+            {selected.analysis?.executive_summary && (
+              <div style={{ marginBottom: "1.25rem" }}>
+                <div className="section-label">Executive Summary</div>
+                <p style={{ fontSize: "0.8125rem", lineHeight: 1.65, color: "#374151" }}>
+                  {selected.analysis.executive_summary}
+                </p>
+              </div>
+            )}
+
+            <div style={{ marginBottom: "0.75rem" }}>
+              <div className="section-label">Approval Status</div>
+              {workflowBadge(workflow[selected.id] ?? "Draft")}
+            </div>
+
+            <details>
+              <summary style={{ cursor: "pointer", fontSize: "0.75rem", color: "#9CA3AF", userSelect: "none" }}>
+                View raw analysis JSON
+              </summary>
+              <pre style={{ marginTop: "0.75rem", padding: "0.875rem", background: "#F7F8FA", border: "1px solid #E4E7EC", borderRadius: "4px", fontSize: "0.6875rem", overflowX: "auto", lineHeight: 1.5 }}>
+                {JSON.stringify(selected.analysis, null, 2)}
+              </pre>
+            </details>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+</file>
+
+<file path="src/routes/_authenticated/index.tsx">
+import { createFileRoute, Link } from "@tanstack/react-router";
+import { useEffect, useState } from "react";
+import { supabase } from "@/integrations/supabase/client";
+import {
+  TrendingUp,
+  AlertTriangle,
+  CheckCircle2,
+  FileSearch,
+  ArrowRight,
+  Clock,
+} from "lucide-react";
+import {
+  ScatterChart,
+  Scatter,
+  XAxis,
+  YAxis,
+  CartesianGrid,
+  Tooltip,
+  ResponsiveContainer,
+  ReferenceDot,
+  Legend,
+} from "recharts";
+
+export const Route = createFileRoute("/_authenticated/")({
+  head: () => ({ meta: [{ title: "Dashboard — Valtor" }] }),
+  component: Dashboard,
+});
+
+type AuditRow = {
+  id: string;
+  project_name: string;
+  contract_value: number;
+  target_margin: number;
+  risk_score: number | null;
+  status: string;
+  created_at: string;
+  analysis: any;
+};
+
+// 20 historical benchmark data points — Ethiopian construction market
+const HISTORICAL_BIDS = [
+  { id: 1, project: "Addis Ring Road Ph.1", risk: 28, margin: 18, status: "Won" },
+  { id: 2, project: "Bole Sub-City Office Block", risk: 44, margin: 14, status: "Won" },
+  { id: 3, project: "Hawassa Industrial Park Ext.", risk: 71, margin: 22, status: "Lost" },
+  { id: 4, project: "Adama Wind Farm Access Road", risk: 35, margin: 16, status: "Won" },
+  { id: 5, project: "Mekelle Hospital Annex", risk: 58, margin: 19, status: "Lost" },
+  { id: 6, project: "Dire Dawa Rail Depot", risk: 62, margin: 12, status: "Lost" },
+  { id: 7, project: "Jimma University STEM Block", risk: 22, margin: 15, status: "Won" },
+  { id: 8, project: "Bishoftu Water Treatment", risk: 41, margin: 17, status: "Won" },
+  { id: 9, project: "Dessie–Kombolcha Bypass", risk: 55, margin: 20, status: "Lost" },
+  { id: 10, project: "Lideta Mixed-Use Tower", risk: 67, margin: 25, status: "Won" },
+  { id: 11, project: "Sebeta Cement Plant Road", risk: 30, margin: 13, status: "Won" },
+  { id: 12, project: "Gondar Heritage Restoration", risk: 49, margin: 21, status: "Lost" },
+  { id: 13, project: "Ayat Residential Phase IV", risk: 25, margin: 15, status: "Won" },
+  { id: 14, project: "Bole Lemi Industrial B1", risk: 38, margin: 16, status: "Won" },
+  { id: 15, project: "Nekemte Health Cluster", risk: 60, margin: 18, status: "Lost" },
+  { id: 16, project: "Assosa Airport Expansion", risk: 74, margin: 24, status: "Lost" },
+  { id: 17, project: "Modjo–Hawassa Expressway", risk: 80, margin: 28, status: "Lost" },
+  { id: 18, project: "Sheger City Phase I", risk: 32, margin: 14, status: "Won" },
+  { id: 19, project: "Wonji Bridge Rehabilitation", risk: 47, margin: 17, status: "Won" },
+  { id: 20, project: "Arba Minch University Hall", risk: 20, margin: 12, status: "Won" },
+];
+
+function formatEtb(n: number) {
+  if (n >= 1_000_000_000) return `${(n / 1_000_000_000).toFixed(1)}B ETB`;
+  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M ETB`;
+  return `${Math.round(n).toLocaleString()} ETB`;
+}
+
+function riskClass(score: number | null) {
+  if (score === null) return "";
+  if (score < 35) return "risk-low";
+  if (score < 65) return "risk-medium";
+  return "risk-high";
+}
+
+function recBadge(rec?: string) {
+  if (!rec) return <span className="badge badge-slate">—</span>;
+  if (rec === "PROCEED") return <span className="badge badge-green">Proceed</span>;
+  if (rec === "DECLINE") return <span className="badge badge-red">Decline</span>;
+  return <span className="badge badge-amber">Caution</span>;
+}
+
+const CustomTooltip = ({ active, payload }: any) => {
+  if (active && payload && payload.length) {
+    const d = payload[0].payload;
+    return (
+      <div className="panel" style={{ padding: "0.625rem 0.875rem", fontSize: "0.75rem", minWidth: "160px" }}>
+        <div style={{ fontWeight: 600, marginBottom: "0.25rem", color: "#0D1117" }}>{d.project}</div>
+        <div style={{ color: "#6B7280" }}>Risk: <strong style={{ color: "#0D1117" }}>{d.risk}</strong></div>
+        <div style={{ color: "#6B7280" }}>Margin: <strong style={{ color: "#0D1117" }}>{d.margin}%</strong></div>
+        <div style={{ marginTop: "0.25rem" }}>
+          <span className={`badge ${d.status === "Won" ? "badge-green" : "badge-red"}`}>{d.status}</span>
+        </div>
+      </div>
+    );
+  }
+  return null;
+};
+
+function Dashboard() {
+  const [audits, setAudits] = useState<AuditRow[]>([]);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    supabase
+      .from("audits")
+      .select("*")
+      .order("created_at", { ascending: false })
+      .limit(50)
+      .then(({ data }) => {
+        setAudits((data as AuditRow[]) ?? []);
+        setLoading(false);
+      });
+  }, []);
+
+  const total = audits.length;
+  const totalValue = audits.reduce((s, a) => s + Number(a.contract_value || 0), 0);
+  const scoredAudits = audits.filter((a) => a.risk_score != null);
+  const avgRisk = scoredAudits.length
+    ? Math.round(scoredAudits.reduce((s, a) => s + Number(a.risk_score!), 0) / scoredAudits.length)
+    : null;
+  const avgMargin = scoredAudits.length
+    ? parseFloat((scoredAudits.reduce((s, a) => s + Number(a.target_margin), 0) / scoredAudits.length).toFixed(1))
+    : null;
+  const proceed = audits.filter((a) => a.analysis?.recommendation === "PROCEED").length;
+
+  const wonBids = HISTORICAL_BIDS.filter((b) => b.status === "Won");
+  const lostBids = HISTORICAL_BIDS.filter((b) => b.status === "Lost");
+
+  const cards = [
+    {
+      label: "Total Bids Audited",
+      value: total.toString(),
+      icon: FileSearch,
+      color: "#0F2240",
+      delta: "all time",
+    },
+    {
+      label: "Portfolio Value",
+      value: formatEtb(totalValue),
+      icon: TrendingUp,
+      color: "#1D4ED8",
+      delta: "under evaluation",
+    },
+    {
+      label: "Avg Risk Score",
+      value: avgRisk !== null ? `${avgRisk}/100` : "—",
+      icon: AlertTriangle,
+      color: avgRisk !== null && avgRisk >= 65 ? "#B91C1C" : avgRisk !== null && avgRisk >= 35 ? "#B45309" : "#15803D",
+      delta: "lower is better",
+    },
+    {
+      label: "Recommended",
+      value: proceed.toString(),
+      icon: CheckCircle2,
+      color: "#15803D",
+      delta: `${total ? Math.round((proceed / total) * 100) : 0}% approval rate`,
+    },
+  ];
+
+  return (
+    <div>
+      {/* Page header */}
+      <div className="page-header" style={{ display: "flex", alignItems: "flex-end", justifyContent: "space-between", gap: "1rem" }}>
+        <div>
+          <div className="page-title">Dashboard</div>
+          <div className="page-subtitle">Portfolio intelligence across all active tenders</div>
+        </div>
+        <Link to="/audit" className="btn-primary">
+          <FileSearch size={14} />
+          New Audit
+        </Link>
+      </div>
+
+      {/* KPI cards */}
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(200px, 1fr))", gap: "1rem", marginBottom: "1.5rem" }}>
+        {cards.map((c) => (
+          <div className="stat-card" key={c.label}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: "0.75rem" }}>
+              <div className="stat-label">{c.label}</div>
+              <div style={{ width: "28px", height: "28px", background: "#F7F8FA", border: "1px solid #E4E7EC", borderRadius: "5px", display: "flex", alignItems: "center", justifyContent: "center" }}>
+                <c.icon size={14} color={c.color} />
+              </div>
+            </div>
+            <div className="stat-value" style={{ color: c.color }}>{c.value}</div>
+            <div className="stat-delta">{c.delta}</div>
+          </div>
+        ))}
+      </div>
+
+      {/* Pipeline table */}
+      <div className="panel" style={{ marginBottom: "1.5rem", overflow: "hidden" }}>
+        <div style={{ padding: "1rem 1.25rem", borderBottom: "1px solid #E4E7EC", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+          <div style={{ fontWeight: 600, fontSize: "0.875rem", color: "#0D1117" }}>Recent Pipeline</div>
+          <Link to="/history" style={{ display: "flex", alignItems: "center", gap: "0.25rem", fontSize: "0.75rem", color: "#1D4ED8", textDecoration: "none" }}>
+            View all <ArrowRight size={12} />
+          </Link>
+        </div>
+
+        {loading ? (
+          <div className="empty-state">
+            <Clock size={24} style={{ margin: "0 auto 0.5rem", opacity: 0.4 }} />
+            <p>Loading pipeline…</p>
+          </div>
+        ) : audits.length === 0 ? (
+          <div className="empty-state">
+            <FileSearch size={28} style={{ margin: "0 auto 0.5rem", opacity: 0.3 }} />
+            <p>No audits yet. <Link to="/audit" style={{ color: "#1D4ED8" }}>Run your first audit →</Link></p>
+          </div>
+        ) : (
+          <div style={{ overflowX: "auto" }}>
+            <table className="data-table">
+              <thead>
+                <tr>
+                  <th>Project</th>
+                  <th className="text-right">Value (ETB)</th>
+                  <th className="text-right">Margin</th>
+                  <th className="text-right">Risk</th>
+                  <th>Recommendation</th>
+                  <th className="text-right">Date</th>
+                </tr>
+              </thead>
+              <tbody>
+                {audits.slice(0, 8).map((a) => (
+                  <tr key={a.id}>
+                    <td style={{ fontWeight: 500 }}>{a.project_name}</td>
+                    <td className="text-right muted">{formatEtb(Number(a.contract_value))}</td>
+                    <td className="text-right">{a.target_margin}%</td>
+                    <td className={`text-right ${riskClass(a.risk_score)}`} style={{ fontWeight: 600 }}>
+                      {a.risk_score != null ? `${Math.round(Number(a.risk_score))}` : "—"}
+                    </td>
+                    <td>{recBadge(a.analysis?.recommendation)}</td>
+                    <td className="text-right muted">{new Date(a.created_at).toLocaleDateString("en-GB", { day: "2-digit", month: "short", year: "numeric" })}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
+
+      {/* Benchmarking scatter chart */}
+      <div className="panel" style={{ padding: "1.25rem" }}>
+        <div style={{ marginBottom: "1rem" }}>
+          <div style={{ fontWeight: 600, fontSize: "0.875rem", color: "#0D1117" }}>Historical Margin vs Risk</div>
+          <div style={{ fontSize: "0.75rem", color: "#6B7280", marginTop: "0.2rem" }}>20 past bids benchmarked against your current portfolio average</div>
+        </div>
+
+        {scoredAudits.length < 2 ? (
+          <div style={{ padding: "2rem", textAlign: "center", color: "#9CA3AF", fontSize: "0.8125rem", background: "#FAFBFC", borderRadius: "4px", border: "1px solid #E4E7EC" }}>
+            Run at least 2 audits to see your portfolio benchmark plotted here.
+          </div>
+        ) : null}
+
+        <ResponsiveContainer width="100%" height={280}>
+          <ScatterChart margin={{ top: 10, right: 24, bottom: 10, left: 0 }}>
+            <CartesianGrid strokeDasharray="3 3" stroke="#F3F4F6" />
+            <XAxis
+              dataKey="risk"
+              type="number"
+              domain={[0, 100]}
+              name="Risk Score"
+              label={{ value: "Risk Score", position: "insideBottom", offset: -4, fontSize: 11, fill: "#9CA3AF" }}
+              tick={{ fontSize: 11, fill: "#9CA3AF" }}
+              axisLine={{ stroke: "#E4E7EC" }}
+              tickLine={false}
+            />
+            <YAxis
+              dataKey="margin"
+              type="number"
+              domain={[0, 32]}
+              name="Target Margin %"
+              label={{ value: "Margin %", angle: -90, position: "insideLeft", offset: 12, fontSize: 11, fill: "#9CA3AF" }}
+              tick={{ fontSize: 11, fill: "#9CA3AF" }}
+              axisLine={{ stroke: "#E4E7EC" }}
+              tickLine={false}
+            />
+            <Tooltip content={<CustomTooltip />} />
+            <Legend
+              wrapperStyle={{ fontSize: "0.75rem", color: "#6B7280", paddingTop: "0.75rem" }}
+              formatter={(value) => <span style={{ color: "#374151" }}>{value}</span>}
+            />
+            <Scatter name="Won" data={wonBids} fill="#15803D" fillOpacity={0.65} r={5} />
+            <Scatter name="Lost" data={lostBids} fill="#B91C1C" fillOpacity={0.65} r={5} />
+            {avgRisk !== null && avgMargin !== null && (
+              <ReferenceDot
+                x={avgRisk}
+                y={avgMargin}
+                r={9}
+                fill="#0F2240"
+                stroke="#FFFFFF"
+                strokeWidth={2}
+                label={{
+                  value: "Portfolio Avg",
+                  position: "top",
+                  fontSize: 10,
+                  fill: "#0F2240",
+                  fontWeight: 600,
+                }}
+              />
+            )}
+          </ScatterChart>
+        </ResponsiveContainer>
+      </div>
+    </div>
+  );
+}
+</file>
+
+<file path="src/routes/_authenticated/tender-feed.tsx">
+import { createFileRoute, useRouter } from "@tanstack/react-router";
+import { useState } from "react";
+import {
+  Loader2,
+  ExternalLink,
+  ArrowRight,
+  Filter,
+  Rss,
+} from "lucide-react";
+
+export const Route = createFileRoute("/_authenticated/tender-feed")({
+  head: () => ({ meta: [{ title: "Tender Feed — Valtor" }] }),
+  component: TenderFeed,
+});
+
+type MatchScore = "High" | "Medium" | "Low";
+type TriageStatus = "New" | "Under Review" | "Shortlisted" | "Passed";
+
+type Tender = {
+  id: string;
+  title: string;
+  source: string;
+  location: string;
+  value_etb: number;
+  deadline: string;
+  match_score: MatchScore;
+  triage_status: TriageStatus;
+  category: string;
+};
+
+const TENDERS: Tender[] = [
+  {
+    id: "T-2026-001",
+    title: "Addis Ababa Ring Road Phase IV — Akaki-Kality Section",
+    source: "ERA Procurement Portal",
+    location: "Addis Ababa",
+    value_etb: 2_400_000_000,
+    deadline: "2026-07-15",
+    match_score: "High",
+    triage_status: "New",
+    category: "Road & Highway",
+  },
+  {
+    id: "T-2026-002",
+    title: "Bole International Airport Terminal Expansion — Phase II",
+    source: "ECAA Tender Office",
+    location: "Addis Ababa",
+    value_etb: 5_800_000_000,
+    deadline: "2026-08-01",
+    match_score: "Medium",
+    triage_status: "New",
+    category: "Aviation Infrastructure",
+  },
+  {
+    id: "T-2026-003",
+    title: "Lideta Mixed-Use Commercial Complex (30F)",
+    source: "PPSA Portal",
+    location: "Addis Ababa",
+    value_etb: 780_000_000,
+    deadline: "2026-07-22",
+    match_score: "High",
+    triage_status: "New",
+    category: "Commercial Building",
+  },
+  {
+    id: "T-2026-004",
+    title: "Hawassa Industrial Park — Zone C Water Supply & Drainage",
+    source: "IPDC Procurement",
+    location: "Hawassa",
+    value_etb: 340_000_000,
+    deadline: "2026-07-10",
+    match_score: "High",
+    triage_status: "New",
+    category: "Civil & MEP",
+  },
+  {
+    id: "T-2026-005",
+    title: "Gondar–Bahir Dar Highway Rehabilitation (145km)",
+    source: "ERA Procurement Portal",
+    location: "Amhara Region",
+    value_etb: 1_920_000_000,
+    deadline: "2026-09-05",
+    match_score: "Low",
+    triage_status: "New",
+    category: "Road & Highway",
+  },
+  {
+    id: "T-2026-006",
+    title: "Sheger City Phase II — Residential Cluster B (480 Units)",
+    source: "AAHCPO",
+    location: "Addis Ababa",
+    value_etb: 560_000_000,
+    deadline: "2026-07-28",
+    match_score: "High",
+    triage_status: "New",
+    category: "Residential",
+  },
+  {
+    id: "T-2026-007",
+    title: "Black Lion Hospital Oncology Wing Construction",
+    source: "FMOH Procurement",
+    location: "Addis Ababa",
+    value_etb: 420_000_000,
+    deadline: "2026-08-18",
+    match_score: "Medium",
+    triage_status: "New",
+    category: "Healthcare",
+  },
+];
+
+function fmtEtb(n: number) {
+  if (n >= 1_000_000_000) return `${(n / 1_000_000_000).toFixed(1)}B`;
+  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(0)}M`;
+  return `${Math.round(n).toLocaleString()}`;
+}
+
+function daysUntil(dateStr: string) {
+  const diff = new Date(dateStr).getTime() - Date.now();
+  return Math.ceil(diff / (1000 * 60 * 60 * 24));
+}
+
+function matchBadge(score: MatchScore) {
+  if (score === "High") return <span className="badge badge-green">High match</span>;
+  if (score === "Medium") return <span className="badge badge-amber">Medium match</span>;
+  return <span className="badge badge-slate">Low match</span>;
+}
+
+function triageBadge(status: TriageStatus) {
+  if (status === "New") return <span className="badge badge-blue">New</span>;
+  if (status === "Under Review") return <span className="badge badge-amber">Under Review</span>;
+  if (status === "Shortlisted") return <span className="badge badge-green">Shortlisted</span>;
+  return <span className="badge badge-slate">Passed</span>;
+}
+
+function TenderFeed() {
+  const router = useRouter();
+  const [tenders, setTenders] = useState<Tender[]>(TENDERS);
+  const [importing, setImporting] = useState<Record<string, boolean>>({});
+  const [filterScore, setFilterScore] = useState<"All" | MatchScore>("All");
+
+  const updateTriage = (id: string, status: TriageStatus) => {
+    setTenders((prev) => prev.map((t) => (t.id === id ? { ...t, triage_status: status } : t)));
+  };
+
+  const importToAudit = async (tender: Tender) => {
+    setImporting((prev) => ({ ...prev, [tender.id]: true }));
+    await new Promise((res) => setTimeout(res, 1100));
+    setImporting((prev) => ({ ...prev, [tender.id]: false }));
+    router.navigate({ to: "/audit", search: { project: tender.title } as any });
+  };
+
+  const visible = filterScore === "All" ? tenders : tenders.filter((t) => t.match_score === filterScore);
+
+  const highCount = tenders.filter((t) => t.match_score === "High").length;
+  const totalValue = tenders.reduce((s, t) => s + t.value_etb, 0);
+
+  return (
+    <div>
+      <div className="page-header" style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: "1rem" }}>
+        <div>
+          <div style={{ display: "flex", alignItems: "center", gap: "0.625rem", marginBottom: "0.25rem" }}>
+            <div className="page-title">Tender Feed</div>
+            <span className="badge badge-blue" style={{ marginBottom: "2px" }}>
+              <Rss size={9} /> Live
+            </span>
+          </div>
+          <div className="page-subtitle">
+            {tenders.length} active tenders · {highCount} high-match · {fmtEtb(totalValue)} ETB total pipeline
+          </div>
+        </div>
+
+        {/* Filter */}
+        <div style={{ display: "flex", alignItems: "center", gap: "0.5rem" }}>
+          <Filter size={13} color="#6B7280" />
+          <span style={{ fontSize: "0.75rem", color: "#6B7280" }}>Match:</span>
+          {(["All", "High", "Medium", "Low"] as const).map((v) => (
+            <button
+              key={v}
+              onClick={() => setFilterScore(v)}
+              className={filterScore === v ? "btn-primary" : "btn-ghost"}
+              style={{ padding: "0.3rem 0.625rem", fontSize: "0.75rem" }}
+            >
+              {v}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      <div className="panel" style={{ overflow: "hidden" }}>
+        <div style={{ overflowX: "auto" }}>
+          <table className="data-table">
+            <thead>
+              <tr>
+                <th style={{ width: "52px" }}>Ref</th>
+                <th>Project</th>
+                <th>Category</th>
+                <th>Source</th>
+                <th className="text-right">Value (ETB)</th>
+                <th className="text-right">Deadline</th>
+                <th>AI Match</th>
+                <th>Triage</th>
+                <th style={{ width: "120px" }}>Actions</th>
+              </tr>
+            </thead>
+            <tbody>
+              {visible.map((t) => {
+                const days = daysUntil(t.deadline);
+                const urgent = days <= 14;
+                return (
+                  <tr key={t.id}>
+                    <td className="muted" style={{ fontFamily: "monospace", fontSize: "0.6875rem" }}>{t.id}</td>
+                    <td>
+                      <div style={{ fontWeight: 500, color: "#0D1117", fontSize: "0.8125rem", lineHeight: 1.3 }}>
+                        {t.title}
+                      </div>
+                      <div style={{ fontSize: "0.6875rem", color: "#9CA3AF", marginTop: "0.2rem" }}>{t.location}</div>
+                    </td>
+                    <td><span className="badge badge-navy">{t.category}</span></td>
+                    <td>
+                      <div style={{ display: "flex", alignItems: "center", gap: "0.25rem", fontSize: "0.75rem", color: "#374151" }}>
+                        <ExternalLink size={10} color="#9CA3AF" />
+                        {t.source}
+                      </div>
+                    </td>
+                    <td className="text-right" style={{ fontWeight: 600, color: "#0D1117", fontFamily: "monospace", fontSize: "0.8125rem" }}>
+                      {fmtEtb(t.value_etb)} ETB
+                    </td>
+                    <td className="text-right">
+                      <div style={{ fontSize: "0.75rem", color: urgent ? "#B91C1C" : "#374151", fontWeight: urgent ? 600 : 400 }}>
+                        {new Date(t.deadline).toLocaleDateString("en-GB", { day: "2-digit", month: "short" })}
+                      </div>
+                      <div style={{ fontSize: "0.625rem", color: urgent ? "#B91C1C" : "#9CA3AF" }}>
+                        {days > 0 ? `${days}d left` : "Expired"}
+                      </div>
+                    </td>
+                    <td>{matchBadge(t.match_score)}</td>
+                    <td>
+                      <select
+                        value={t.triage_status}
+                        onChange={(e) => updateTriage(t.id, e.target.value as TriageStatus)}
+                        className="field-input"
+                        style={{ padding: "0.2rem 0.5rem", fontSize: "0.6875rem", width: "auto", minWidth: "110px" }}
+                      >
+                        <option value="New">New</option>
+                        <option value="Under Review">Under Review</option>
+                        <option value="Shortlisted">Shortlisted</option>
+                        <option value="Passed">Passed</option>
+                      </select>
+                    </td>
+                    <td>
+                      <button
+                        onClick={() => importToAudit(t)}
+                        disabled={importing[t.id]}
+                        className="btn-accent"
+                        style={{ padding: "0.3rem 0.625rem", fontSize: "0.75rem" }}
+                      >
+                        {importing[t.id] ? (
+                          <><Loader2 size={11} className="animate-spin" /> Importing</>
+                        ) : (
+                          <>Audit <ArrowRight size={11} /></>
+                        )}
+                      </button>
+                    </td>
+                  </tr>
+                );
+              })}
+
+              {visible.length === 0 && (
+                <tr>
+                  <td colSpan={9} style={{ textAlign: "center", padding: "3rem", color: "#9CA3AF", fontSize: "0.8125rem" }}>
+                    No tenders match the current filter.
+                  </td>
+                </tr>
+              )}
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <div style={{ marginTop: "0.75rem", fontSize: "0.6875rem", color: "#9CA3AF" }}>
+        Data sourced from ERA, PPSA, ECAA, and IPDC procurement portals. Refreshed daily.
+      </div>
+    </div>
+  );
+}
+</file>
+
+<file path="src/routes/auth.tsx">
+import { createFileRoute, useRouter } from "@tanstack/react-router";
+import { useEffect, useState } from "react";
+import { supabase } from "@/integrations/supabase/client";
+import { isSupabaseConfigured, supabaseConfig } from "@/integrations/supabase/config";
+import { ArrowRight, Loader2, Lock, Mail, Shield } from "lucide-react";
+
+type AuthSearch = {
+  redirect?: string;
+  reason?: "config" | "network" | "session";
+};
+
+export const Route = createFileRoute("/auth")({
+  validateSearch: (search: Record<string, unknown>): AuthSearch => ({
+    redirect: typeof search.redirect === "string" ? search.redirect : undefined,
+    reason:
+      search.reason === "config" || search.reason === "network" || search.reason === "session"
+        ? search.reason
+        : undefined,
+  }),
+  head: () => ({
+    meta: [
+      { title: "Sign in - Valtor" },
+      {
+        name: "description",
+        content: "Sign in to Valtor - construction bid intelligence platform.",
+      },
+    ],
+  }),
+  component: AuthPage,
+});
+
+const PASSWORD_MIN_LENGTH = 12;
+
+function cleanEmail(value: string) {
+  return value.trim().toLowerCase();
+}
+
+function validatePassword(password: string) {
+  if (password.length < PASSWORD_MIN_LENGTH) {
+    return `Password must be at least ${PASSWORD_MIN_LENGTH} characters.`;
+  }
+
+  if (!/[a-z]/.test(password) || !/[A-Z]/.test(password) || !/[0-9]/.test(password)) {
+    return "Password must include uppercase, lowercase, and a number.";
+  }
+
+  return null;
+}
+
+function getSafeRedirect(redirect?: string) {
+  if (!redirect) return "/";
+
+  try {
+    const url = new URL(redirect, window.location.origin);
+
+    if (url.origin !== window.location.origin || url.pathname === "/auth") {
+      return "/";
+    }
+
+    return `${url.pathname}${url.search}${url.hash}`;
+  } catch {
+    return "/";
+  }
+}
+
+function friendlyAuthError(error: unknown) {
+  const message = error instanceof Error ? error.message : String(error);
+
+  if (/failed to fetch|networkerror|load failed|fetch/i.test(message)) {
+    return "Cannot reach Supabase. Check .env.local, your Supabase project URL/key, and Auth URL Configuration.";
+  }
+
+  if (/invalid login credentials/i.test(message)) {
+    return "Invalid email or password.";
+  }
+
+  if (/email not confirmed/i.test(message)) {
+    return "Confirm your email before signing in.";
+  }
+
+  return message || "Authentication failed. Please try again.";
+}
+
+function AuthPage() {
+  const router = useRouter();
+  const search = Route.useSearch();
+  const [mode, setMode] = useState<"signin" | "signup">("signin");
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [info, setInfo] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!isSupabaseConfigured) {
+      setError(supabaseConfig.error);
+      return;
+    }
+
+    if (search.reason === "network") {
+      setError("Your session could not be verified because Supabase was unreachable.");
+    }
+
+    supabase.auth
+      .getSession()
+      .then(({ data, error }) => {
+        if (error) throw error;
+        if (data.session) router.navigate({ to: "/", replace: true });
+      })
+      .catch((authError) => setError(friendlyAuthError(authError)));
+  }, [router, search.reason]);
+
+  const submit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setError(null);
+    setInfo(null);
+
+    if (!isSupabaseConfigured) {
+      setError(supabaseConfig.error);
+      return;
+    }
+
+    const normalizedEmail = cleanEmail(email);
+
+    if (!normalizedEmail) {
+      setError("Work email is required.");
+      return;
+    }
+
+    if (mode === "signup") {
+      const passwordError = validatePassword(password);
+
+      if (passwordError) {
+        setError(passwordError);
+        return;
+      }
+    }
+
+    setLoading(true);
+
+    try {
+      if (mode === "signup") {
+        const { data, error } = await supabase.auth.signUp({
+          email: normalizedEmail,
+          password,
+          options: { emailRedirectTo: `${window.location.origin}/auth` },
+        });
+
+        if (error) throw error;
+
+        if (data.session) {
+          window.location.replace(getSafeRedirect(search.redirect));
+          return;
+        }
+
+        setInfo("Account created. Check your email to confirm your sign in.");
+        setMode("signin");
+      } else {
+        const { error } = await supabase.auth.signInWithPassword({
+          email: normalizedEmail,
+          password,
+        });
+
+        if (error) throw error;
+
+        window.location.replace(getSafeRedirect(search.redirect));
+      }
+    } catch (err) {
+      setError(friendlyAuthError(err));
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const switchMode = () => {
+    setMode(mode === "signin" ? "signup" : "signin");
+    setError(isSupabaseConfigured ? null : supabaseConfig.error);
+    setInfo(null);
+  };
+
+  return (
+    <div
+      style={{
+        minHeight: "100vh",
+        display: "flex",
+        background: "#F7F8FA",
+      }}
+    >
+      <div
+        style={{
+          width: "420px",
+          background: "#0F2240",
+          display: "flex",
+          flexDirection: "column",
+          justifyContent: "space-between",
+          padding: "3rem",
+          flexShrink: 0,
+        }}
+        className="hidden lg:flex"
+      >
+        <div>
+          <div style={{ display: "flex", alignItems: "center", gap: "0.75rem", marginBottom: "3.5rem" }}>
+            <div style={{ width: "36px", height: "36px", background: "#FFFFFF", borderRadius: "7px", display: "flex", alignItems: "center", justifyContent: "center" }}>
+              <Shield size={18} color="#0F2240" />
+            </div>
+            <div>
+              <div style={{ fontSize: "1.1rem", fontWeight: 700, color: "#FFFFFF", letterSpacing: "-0.02em" }}>Valtor</div>
+              <div style={{ fontSize: "0.625rem", color: "rgba(255,255,255,0.45)", textTransform: "uppercase", letterSpacing: "0.1em" }}>Bid Intelligence</div>
+            </div>
+          </div>
+
+          <div style={{ fontSize: "1.75rem", fontWeight: 700, color: "#FFFFFF", lineHeight: 1.2, letterSpacing: "-0.03em", marginBottom: "1rem" }}>
+            Construction risk intelligence for the enterprise.
+          </div>
+          <div style={{ fontSize: "0.875rem", color: "rgba(255,255,255,0.55)", lineHeight: 1.65 }}>
+            Valtor analyses tender documents, quantifies bid risk, and surfaces the data your estimating team needs to make the right call - faster.
+          </div>
+        </div>
+
+        <div style={{ borderTop: "1px solid rgba(255,255,255,0.1)", paddingTop: "1.5rem" }}>
+          {[
+            "Multi-format tender ingestion",
+            "AI risk scoring & evaluation matrix",
+            "Live tender feed with match scoring",
+            "One-click BoQ export to Excel",
+            "Enterprise approval workflows",
+          ].map((feat) => (
+            <div key={feat} style={{ display: "flex", alignItems: "center", gap: "0.5rem", marginBottom: "0.625rem" }}>
+              <div style={{ width: "5px", height: "5px", borderRadius: "50%", background: "#1D4ED8", flexShrink: 0 }} />
+              <span style={{ fontSize: "0.8125rem", color: "rgba(255,255,255,0.65)" }}>{feat}</span>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      <div style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center", padding: "2rem" }}>
+        <div style={{ width: "100%", maxWidth: "380px" }}>
+          <div className="lg:hidden" style={{ display: "flex", alignItems: "center", gap: "0.625rem", marginBottom: "2rem" }}>
+            <div style={{ width: "32px", height: "32px", background: "#0F2240", borderRadius: "6px", display: "flex", alignItems: "center", justifyContent: "center" }}>
+              <Shield size={16} color="#FFFFFF" />
+            </div>
+            <div style={{ fontSize: "1.125rem", fontWeight: 700, color: "#0D1117" }}>Valtor</div>
+          </div>
+
+          <div style={{ marginBottom: "2rem" }}>
+            <div style={{ fontSize: "1.25rem", fontWeight: 700, color: "#0D1117", letterSpacing: "-0.02em" }}>
+              {mode === "signin" ? "Welcome back" : "Create your account"}
+            </div>
+            <div style={{ fontSize: "0.8125rem", color: "#6B7280", marginTop: "0.375rem" }}>
+              {mode === "signin" ? "Sign in to access your workspace." : "Use a strong password to protect bid data."}
+            </div>
+          </div>
+
+          <form onSubmit={submit} style={{ display: "flex", flexDirection: "column", gap: "1rem" }}>
+            <div>
+              <label className="section-label">Work email</label>
+              <div style={{ position: "relative" }}>
+                <Mail size={14} color="#9CA3AF" style={{ position: "absolute", left: "0.75rem", top: "50%", transform: "translateY(-50%)" }} />
+                <input
+                  type="email"
+                  required
+                  value={email}
+                  onChange={(e) => setEmail(e.target.value)}
+                  autoComplete="email"
+                  className="field-input"
+                  style={{ paddingLeft: "2.25rem" }}
+                  placeholder="you@firm.com"
+                />
+              </div>
+            </div>
+            <div>
+              <label className="section-label">Password</label>
+              <div style={{ position: "relative" }}>
+                <Lock size={14} color="#9CA3AF" style={{ position: "absolute", left: "0.75rem", top: "50%", transform: "translateY(-50%)" }} />
+                <input
+                  type="password"
+                  required
+                  minLength={mode === "signup" ? PASSWORD_MIN_LENGTH : 1}
+                  value={password}
+                  onChange={(e) => setPassword(e.target.value)}
+                  autoComplete={mode === "signup" ? "new-password" : "current-password"}
+                  className="field-input"
+                  style={{ paddingLeft: "2.25rem" }}
+                  placeholder="••••••••••••"
+                />
+              </div>
+            </div>
+
+            {error && (
+              <div style={{ background: "#FEF2F2", border: "1px solid #FECACA", borderRadius: "4px", padding: "0.625rem 0.875rem", fontSize: "0.8125rem", color: "#B91C1C", lineHeight: 1.45 }}>
+                {error}
+              </div>
+            )}
+            {info && (
+              <div style={{ background: "#F0FDF4", border: "1px solid #BBF7D0", borderRadius: "4px", padding: "0.625rem 0.875rem", fontSize: "0.8125rem", color: "#15803D", lineHeight: 1.45 }}>
+                {info}
+              </div>
+            )}
+
+            <button type="submit" disabled={loading || !isSupabaseConfigured} className="btn-primary" style={{ width: "100%", justifyContent: "center", padding: "0.6875rem" }}>
+              {loading ? (
+                <><Loader2 size={14} className="animate-spin" /> Signing in...</>
+              ) : (
+                <>{mode === "signin" ? "Sign in" : "Create account"} <ArrowRight size={14} /></>
+              )}
+            </button>
+          </form>
+
+          <button
+            onClick={switchMode}
+            style={{ marginTop: "1.25rem", width: "100%", background: "none", border: "none", cursor: "pointer", fontSize: "0.8125rem", color: "#6B7280" }}
+          >
+            {mode === "signin" ? "No account? Create one" : "Already have an account? Sign in"}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+</file>
+
+<file path="src/routeTree.gen.ts">
+/* eslint-disable */
+
+// @ts-nocheck
+
+// noinspection JSUnusedGlobalSymbols
+
+// This file was automatically generated by TanStack Router.
+// You should NOT make any changes in this file as it will be overwritten.
+// Additionally, you should also exclude this file from your linter and/or formatter to prevent it from being checked or modified.
+
+import { Route as rootRouteImport } from "./routes/__root";
+import { Route as AuthRouteImport } from "./routes/auth";
+import { Route as AuthenticatedRouteImport } from "./routes/_authenticated";
+import { Route as AuthenticatedIndexRouteImport } from "./routes/_authenticated/index";
+import { Route as AuthenticatedTenderFeedRouteImport } from "./routes/_authenticated/tender-feed";
+import { Route as AuthenticatedHistoryRouteImport } from "./routes/_authenticated/history";
+import { Route as AuthenticatedAuditRouteImport } from "./routes/_authenticated/audit";
+
+const AuthRoute = AuthRouteImport.update({
+  id: "/auth",
+  path: "/auth",
+  getParentRoute: () => rootRouteImport,
+} as any);
+const AuthenticatedRoute = AuthenticatedRouteImport.update({
+  id: "/_authenticated",
+  getParentRoute: () => rootRouteImport,
+} as any);
+const AuthenticatedIndexRoute = AuthenticatedIndexRouteImport.update({
+  id: "/",
+  path: "/",
+  getParentRoute: () => AuthenticatedRoute,
+} as any);
+const AuthenticatedTenderFeedRoute = AuthenticatedTenderFeedRouteImport.update({
+  id: "/tender-feed",
+  path: "/tender-feed",
+  getParentRoute: () => AuthenticatedRoute,
+} as any);
+const AuthenticatedHistoryRoute = AuthenticatedHistoryRouteImport.update({
+  id: "/history",
+  path: "/history",
+  getParentRoute: () => AuthenticatedRoute,
+} as any);
+const AuthenticatedAuditRoute = AuthenticatedAuditRouteImport.update({
+  id: "/audit",
+  path: "/audit",
+  getParentRoute: () => AuthenticatedRoute,
+} as any);
+
+export interface FileRoutesByFullPath {
+  "/": typeof AuthenticatedIndexRoute;
+  "/auth": typeof AuthRoute;
+  "/audit": typeof AuthenticatedAuditRoute;
+  "/history": typeof AuthenticatedHistoryRoute;
+  "/tender-feed": typeof AuthenticatedTenderFeedRoute;
+}
+export interface FileRoutesByTo {
+  "/auth": typeof AuthRoute;
+  "/audit": typeof AuthenticatedAuditRoute;
+  "/history": typeof AuthenticatedHistoryRoute;
+  "/tender-feed": typeof AuthenticatedTenderFeedRoute;
+  "/": typeof AuthenticatedIndexRoute;
+}
+export interface FileRoutesById {
+  __root__: typeof rootRouteImport;
+  "/_authenticated": typeof AuthenticatedRouteWithChildren;
+  "/auth": typeof AuthRoute;
+  "/_authenticated/audit": typeof AuthenticatedAuditRoute;
+  "/_authenticated/history": typeof AuthenticatedHistoryRoute;
+  "/_authenticated/tender-feed": typeof AuthenticatedTenderFeedRoute;
+  "/_authenticated/": typeof AuthenticatedIndexRoute;
+}
+export interface FileRouteTypes {
+  fileRoutesByFullPath: FileRoutesByFullPath;
+  fullPaths: "/" | "/auth" | "/audit" | "/history" | "/tender-feed";
+  fileRoutesByTo: FileRoutesByTo;
+  to: "/auth" | "/audit" | "/history" | "/tender-feed" | "/";
+  id:
+    | "__root__"
+    | "/_authenticated"
+    | "/auth"
+    | "/_authenticated/audit"
+    | "/_authenticated/history"
+    | "/_authenticated/tender-feed"
+    | "/_authenticated/";
+  fileRoutesById: FileRoutesById;
+}
+export interface RootRouteChildren {
+  AuthenticatedRoute: typeof AuthenticatedRouteWithChildren;
+  AuthRoute: typeof AuthRoute;
+}
+
+declare module "@tanstack/react-router" {
+  interface FileRoutesByPath {
+    "/auth": {
+      id: "/auth";
+      path: "/auth";
+      fullPath: "/auth";
+      preLoaderRoute: typeof AuthRouteImport;
+      parentRoute: typeof rootRouteImport;
+    };
+    "/_authenticated": {
+      id: "/_authenticated";
+      path: "";
+      fullPath: "/";
+      preLoaderRoute: typeof AuthenticatedRouteImport;
+      parentRoute: typeof rootRouteImport;
+    };
+    "/_authenticated/": {
+      id: "/_authenticated/";
+      path: "/";
+      fullPath: "/";
+      preLoaderRoute: typeof AuthenticatedIndexRouteImport;
+      parentRoute: typeof AuthenticatedRoute;
+    };
+    "/_authenticated/tender-feed": {
+      id: "/_authenticated/tender-feed";
+      path: "/tender-feed";
+      fullPath: "/tender-feed";
+      preLoaderRoute: typeof AuthenticatedTenderFeedRouteImport;
+      parentRoute: typeof AuthenticatedRoute;
+    };
+    "/_authenticated/history": {
+      id: "/_authenticated/history";
+      path: "/history";
+      fullPath: "/history";
+      preLoaderRoute: typeof AuthenticatedHistoryRouteImport;
+      parentRoute: typeof AuthenticatedRoute;
+    };
+    "/_authenticated/audit": {
+      id: "/_authenticated/audit";
+      path: "/audit";
+      fullPath: "/audit";
+      preLoaderRoute: typeof AuthenticatedAuditRouteImport;
+      parentRoute: typeof AuthenticatedRoute;
+    };
+  }
+}
+
+interface AuthenticatedRouteChildren {
+  AuthenticatedAuditRoute: typeof AuthenticatedAuditRoute;
+  AuthenticatedHistoryRoute: typeof AuthenticatedHistoryRoute;
+  AuthenticatedTenderFeedRoute: typeof AuthenticatedTenderFeedRoute;
+  AuthenticatedIndexRoute: typeof AuthenticatedIndexRoute;
+}
+
+const AuthenticatedRouteChildren: AuthenticatedRouteChildren = {
+  AuthenticatedAuditRoute: AuthenticatedAuditRoute,
+  AuthenticatedHistoryRoute: AuthenticatedHistoryRoute,
+  AuthenticatedTenderFeedRoute: AuthenticatedTenderFeedRoute,
+  AuthenticatedIndexRoute: AuthenticatedIndexRoute,
+};
+
+const AuthenticatedRouteWithChildren = AuthenticatedRoute._addFileChildren(
+  AuthenticatedRouteChildren,
+);
+
+const rootRouteChildren: RootRouteChildren = {
+  AuthenticatedRoute: AuthenticatedRouteWithChildren,
+  AuthRoute: AuthRoute,
+};
+export const routeTree = rootRouteImport
+  ._addFileChildren(rootRouteChildren)
+  ._addFileTypes<FileRouteTypes>();
+</file>
+
+<file path="src/styles.css">
+@import "tailwindcss" source(none);
+@source "../src";
+@import "tw-animate-css";
+
+@custom-variant dark (&:is(.dark *));
+
+@theme inline {
+  --radius-sm: calc(var(--radius) - 2px);
+  --radius-md: var(--radius);
+  --radius-lg: calc(var(--radius) + 2px);
+  --radius-xl: calc(var(--radius) + 4px);
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-destructive-foreground: var(--destructive-foreground);
+  --color-success: var(--success);
+  --color-warning: var(--warning);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+}
+
+:root {
+  --radius: 0.375rem;
+
+  /* Valtor Brand — Deep slate infrastructure platform */
+  --background: #F7F8FA;
+  --foreground: #0D1117;
+
+  --card: #FFFFFF;
+  --card-foreground: #0D1117;
+  --popover: #FFFFFF;
+  --popover-foreground: #0D1117;
+
+  --primary: #0F2240;
+  --primary-foreground: #FFFFFF;
+  --secondary: #EEF1F6;
+  --secondary-foreground: #374151;
+
+  --muted: #EEF1F6;
+  --muted-foreground: #6B7280;
+
+  /* Single accent — steel blue, used for CTAs and active states only */
+  --accent: #1D4ED8;
+  --accent-foreground: #FFFFFF;
+
+  --destructive: #B91C1C;
+  --destructive-foreground: #FFFFFF;
+  --success: #15803D;
+  --warning: #B45309;
+
+  --border: #E4E7EC;
+  --input: #FFFFFF;
+  --ring: rgba(15, 34, 64, 0.15);
+
+  --shadow-xs: 0 1px 2px rgba(0,0,0,0.04);
+  --shadow-sm: 0 1px 3px rgba(0,0,0,0.06), 0 1px 2px rgba(0,0,0,0.04);
+  --shadow-md: 0 4px 8px rgba(0,0,0,0.06), 0 2px 4px rgba(0,0,0,0.04);
+}
+
+@layer base {
+  * {
+    border-color: var(--color-border);
+    box-sizing: border-box;
+  }
+
+  html, body, #root {
+    min-height: 100%;
+  }
+
+  body {
+    background-color: var(--color-background);
+    color: var(--color-foreground);
+    font-family: "Inter", system-ui, -apple-system, sans-serif;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    font-size: 14px;
+    line-height: 1.5;
+  }
+
+  h1, h2, h3, h4, h5, h6 {
+    font-family: "Inter", system-ui, sans-serif;
+    letter-spacing: -0.02em;
+    line-height: 1.2;
+  }
+
+  input, textarea, select {
+    font-family: inherit;
+    font-size: inherit;
+  }
+}
+
+@layer components {
+  /* ── Core panel ─────────────────────────────────────────────────────── */
+  .panel {
+    background: #FFFFFF;
+    border: 1px solid #E4E7EC;
+    border-radius: var(--radius-md);
+    box-shadow: var(--shadow-xs);
+  }
+
+  /* ── Form inputs ─────────────────────────────────────────────────────── */
+  .field-input {
+    background: #FFFFFF;
+    border: 1px solid #D1D5DB;
+    border-radius: var(--radius-sm);
+    color: #0D1117;
+    padding: 0.5rem 0.75rem;
+    width: 100%;
+    font-size: 0.875rem;
+    transition: border-color 0.12s ease, box-shadow 0.12s ease;
+  }
+  .field-input:focus {
+    border-color: #0F2240;
+    box-shadow: 0 0 0 3px rgba(15, 34, 64, 0.1);
+    outline: none;
+  }
+  .field-input::placeholder {
+    color: #9CA3AF;
+  }
+
+  /* ── Buttons ─────────────────────────────────────────────────────────── */
+  .btn-primary {
+    background: #0F2240;
+    color: #FFFFFF;
+    font-weight: 600;
+    font-size: 0.875rem;
+    border-radius: var(--radius-sm);
+    border: 1px solid #0F2240;
+    padding: 0.5rem 1rem;
+    display: inline-flex;
+    align-items: center;
+    gap: 0.375rem;
+    cursor: pointer;
+    transition: background 0.12s ease, border-color 0.12s ease;
+    white-space: nowrap;
+  }
+  .btn-primary:hover { background: #0A1929; border-color: #0A1929; }
+  .btn-primary:disabled { opacity: 0.45; cursor: not-allowed; }
+
+  .btn-secondary {
+    background: #FFFFFF;
+    color: #374151;
+    font-weight: 500;
+    font-size: 0.875rem;
+    border-radius: var(--radius-sm);
+    border: 1px solid #D1D5DB;
+    padding: 0.5rem 1rem;
+    display: inline-flex;
+    align-items: center;
+    gap: 0.375rem;
+    cursor: pointer;
+    transition: background 0.12s ease, border-color 0.12s ease;
+    white-space: nowrap;
+  }
+  .btn-secondary:hover { background: #F9FAFB; border-color: #9CA3AF; }
+  .btn-secondary:disabled { opacity: 0.45; cursor: not-allowed; }
+
+  .btn-accent {
+    background: #1D4ED8;
+    color: #FFFFFF;
+    font-weight: 600;
+    font-size: 0.875rem;
+    border-radius: var(--radius-sm);
+    border: 1px solid #1D4ED8;
+    padding: 0.5rem 1rem;
+    display: inline-flex;
+    align-items: center;
+    gap: 0.375rem;
+    cursor: pointer;
+    transition: background 0.12s ease;
+    white-space: nowrap;
+  }
+  .btn-accent:hover { background: #1A44C5; }
+  .btn-accent:disabled { opacity: 0.45; cursor: not-allowed; }
+
+  .btn-ghost {
+    background: transparent;
+    color: #6B7280;
+    font-size: 0.875rem;
+    border-radius: var(--radius-sm);
+    border: 1px solid transparent;
+    padding: 0.375rem 0.5rem;
+    display: inline-flex;
+    align-items: center;
+    gap: 0.25rem;
+    cursor: pointer;
+    transition: background 0.12s ease, color 0.12s ease;
+  }
+  .btn-ghost:hover { background: #F3F4F6; color: #0D1117; border-color: #E4E7EC; }
+
+  /* ── Data table ──────────────────────────────────────────────────────── */
+  .data-table {
+    width: 100%;
+    font-size: 0.8125rem;
+    border-collapse: collapse;
+  }
+  .data-table thead tr {
+    background: #F7F8FA;
+    border-bottom: 1px solid #E4E7EC;
+  }
+  .data-table thead th {
+    text-align: left;
+    padding: 0.625rem 1rem;
+    font-size: 0.6875rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: #6B7280;
+    white-space: nowrap;
+  }
+  .data-table thead th.text-right { text-align: right; }
+  .data-table tbody tr {
+    border-bottom: 1px solid #F3F4F6;
+    transition: background 0.08s ease;
+  }
+  .data-table tbody tr:hover { background: #FAFBFC; }
+  .data-table tbody td {
+    padding: 0.75rem 1rem;
+    color: #111827;
+    vertical-align: middle;
+  }
+  .data-table tbody td.text-right { text-align: right; }
+  .data-table tbody td.muted { color: #6B7280; }
+
+  /* ── Status badges ───────────────────────────────────────────────────── */
+  .badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.25rem;
+    font-size: 0.6875rem;
+    font-weight: 600;
+    letter-spacing: 0.04em;
+    padding: 0.2rem 0.5rem;
+    border-radius: 3px;
+    border: 1px solid transparent;
+    white-space: nowrap;
+  }
+  .badge-green  { background: #F0FDF4; color: #15803D; border-color: #BBF7D0; }
+  .badge-red    { background: #FEF2F2; color: #B91C1C; border-color: #FECACA; }
+  .badge-amber  { background: #FFFBEB; color: #B45309; border-color: #FDE68A; }
+  .badge-blue   { background: #EFF6FF; color: #1D4ED8; border-color: #BFDBFE; }
+  .badge-slate  { background: #F8FAFC; color: #475569; border-color: #CBD5E1; }
+  .badge-navy   { background: #EFF3FA; color: #0F2240; border-color: #C3CEDF; }
+
+  /* ── Page header ─────────────────────────────────────────────────────── */
+  .page-header {
+    margin-bottom: 1.5rem;
+  }
+  .page-title {
+    font-size: 1.375rem;
+    font-weight: 700;
+    color: #0D1117;
+    letter-spacing: -0.025em;
+  }
+  .page-subtitle {
+    font-size: 0.8125rem;
+    color: #6B7280;
+    margin-top: 0.25rem;
+  }
+
+  /* ── Section label ───────────────────────────────────────────────────── */
+  .section-label {
+    font-size: 0.6875rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.07em;
+    color: #6B7280;
+    margin-bottom: 0.5rem;
+  }
+
+  /* ── Stat card ───────────────────────────────────────────────────────── */
+  .stat-card {
+    background: #FFFFFF;
+    border: 1px solid #E4E7EC;
+    border-radius: var(--radius-md);
+    padding: 1.25rem 1.5rem;
+  }
+  .stat-label {
+    font-size: 0.6875rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: #6B7280;
+    margin-bottom: 0.5rem;
+  }
+  .stat-value {
+    font-size: 1.625rem;
+    font-weight: 700;
+    color: #0D1117;
+    letter-spacing: -0.025em;
+    line-height: 1;
+  }
+  .stat-delta {
+    font-size: 0.75rem;
+    color: #6B7280;
+    margin-top: 0.375rem;
+  }
+
+  /* ── Risk score ring ─────────────────────────────────────────────────── */
+  .risk-low    { color: #15803D; }
+  .risk-medium { color: #B45309; }
+  .risk-high   { color: #B91C1C; }
+
+  /* ── Divider ─────────────────────────────────────────────────────────── */
+  .divider {
+    border: none;
+    border-top: 1px solid #E4E7EC;
+    margin: 1.5rem 0;
+  }
+
+  /* ── File queue row ──────────────────────────────────────────────────── */
+  .file-row {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+    padding: 0.625rem 0.875rem;
+    border-bottom: 1px solid #F3F4F6;
+  }
+  .file-row:last-child { border-bottom: none; }
+  .file-row:nth-child(odd) { background: #FAFBFC; }
+  .file-row:nth-child(even) { background: #FFFFFF; }
+
+  /* ── Dropzone ────────────────────────────────────────────────────────── */
+  .dropzone {
+    border: 1.5px dashed #D1D5DB;
+    border-radius: var(--radius-md);
+    padding: 2rem 1.5rem;
+    text-align: center;
+    cursor: pointer;
+    transition: border-color 0.12s ease, background 0.12s ease;
+    background: #FAFBFC;
+  }
+  .dropzone:hover, .dropzone.active {
+    border-color: #0F2240;
+    background: #F0F3F8;
+  }
+
+  /* ── Sidebar nav ─────────────────────────────────────────────────────── */
+  .nav-link {
+    display: flex;
+    align-items: center;
+    gap: 0.625rem;
+    padding: 0.5rem 0.875rem;
+    border-radius: var(--radius-sm);
+    font-size: 0.8125rem;
+    font-weight: 500;
+    color: #6B7280;
+    text-decoration: none;
+    transition: background 0.1s ease, color 0.1s ease;
+    white-space: nowrap;
+  }
+  .nav-link:hover { background: #F3F4F6; color: #0D1117; }
+  .nav-link.active {
+    background: #EEF1F6;
+    color: #0F2240;
+    font-weight: 600;
+    border-left: 2px solid #0F2240;
+    padding-left: calc(0.875rem - 2px);
+  }
+
+  /* ── Empty state ─────────────────────────────────────────────────────── */
+  .empty-state {
+    padding: 3.5rem 2rem;
+    text-align: center;
+    color: #9CA3AF;
+  }
+  .empty-state p { font-size: 0.875rem; margin-top: 0.5rem; }
+}
+</file>
+
+<file path="src/vite-env.d.ts">
+/// <reference types="vite/client" />
+</file>
+
+<file path="SUPABASE_SETUP.md">
+# Supabase Setup
+
+1. Create a Supabase project.
+2. Copy `.env.example` to `.env.local`.
+3. Set `VITE_SUPABASE_URL` to your Project URL.
+4. Set `VITE_SUPABASE_ANON_KEY` to your anon or publishable browser key.
+5. In Supabase SQL Editor, run `supabase/migrations/001_initial_security.sql`.
+6. In Authentication > URL Configuration, add your local site URL:
+   `http://127.0.0.1:5173`
+7. For production, add your real domain to Site URL and Redirect URLs.
+
+The frontend key is allowed to be public. The database is protected by Row Level Security, so users can only read, insert, update, and delete their own audit rows.
+</file>
+
+<file path="supabase/migrations/001_initial_security.sql">
+-- Valtor Supabase schema
+-- Run this in the Supabase SQL editor or through the Supabase CLI.
+
+create extension if not exists pgcrypto;
+
+create table if not exists public.profiles (
+  id uuid primary key references auth.users(id) on delete cascade,
+  email text not null,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+
+create table if not exists public.audits (
+  id uuid primary key default gen_random_uuid(),
+  user_id uuid not null references auth.users(id) on delete cascade,
+  project_name text not null check (char_length(trim(project_name)) between 1 and 200),
+  file_name text,
+  contract_value numeric(18, 2) not null default 0 check (contract_value >= 0),
+  target_margin numeric(6, 2) not null default 0 check (target_margin >= 0 and target_margin <= 100),
+  risk_score integer check (risk_score is null or (risk_score >= 0 and risk_score <= 100)),
+  status text not null default 'completed' check (status in ('draft', 'running', 'completed', 'failed')),
+  analysis jsonb not null default '{}'::jsonb,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+
+create index if not exists audits_user_created_idx on public.audits (user_id, created_at desc);
+create index if not exists audits_analysis_gin_idx on public.audits using gin (analysis);
+
+alter table public.profiles enable row level security;
+alter table public.profiles force row level security;
+alter table public.audits enable row level security;
+alter table public.audits force row level security;
+
+grant usage on schema public to anon, authenticated;
+grant select, insert, update on public.profiles to authenticated;
+grant select, insert, update, delete on public.audits to authenticated;
+
+drop policy if exists "profiles_select_own" on public.profiles;
+create policy "profiles_select_own"
+  on public.profiles
+  for select
+  to authenticated
+  using ((select auth.uid()) is not null and (select auth.uid()) = id);
+
+drop policy if exists "profiles_update_own" on public.profiles;
+create policy "profiles_update_own"
+  on public.profiles
+  for update
+  to authenticated
+  using ((select auth.uid()) is not null and (select auth.uid()) = id)
+  with check ((select auth.uid()) is not null and (select auth.uid()) = id);
+
+drop policy if exists "audits_select_own" on public.audits;
+create policy "audits_select_own"
+  on public.audits
+  for select
+  to authenticated
+  using ((select auth.uid()) is not null and (select auth.uid()) = user_id);
+
+drop policy if exists "audits_insert_own" on public.audits;
+create policy "audits_insert_own"
+  on public.audits
+  for insert
+  to authenticated
+  with check ((select auth.uid()) is not null and (select auth.uid()) = user_id);
+
+drop policy if exists "audits_update_own" on public.audits;
+create policy "audits_update_own"
+  on public.audits
+  for update
+  to authenticated
+  using ((select auth.uid()) is not null and (select auth.uid()) = user_id)
+  with check ((select auth.uid()) is not null and (select auth.uid()) = user_id);
+
+drop policy if exists "audits_delete_own" on public.audits;
+create policy "audits_delete_own"
+  on public.audits
+  for delete
+  to authenticated
+  using ((select auth.uid()) is not null and (select auth.uid()) = user_id);
+
+create or replace function public.set_updated_at()
+returns trigger
+language plpgsql
+set search_path = public
+as $$
+begin
+  new.updated_at = now();
+  return new;
+end;
+$$;
+
+drop trigger if exists profiles_set_updated_at on public.profiles;
+create trigger profiles_set_updated_at
+  before update on public.profiles
+  for each row execute function public.set_updated_at();
+
+drop trigger if exists audits_set_updated_at on public.audits;
+create trigger audits_set_updated_at
+  before update on public.audits
+  for each row execute function public.set_updated_at();
+
+create or replace function public.handle_new_user()
+returns trigger
+language plpgsql
+security definer
+set search_path = public
+as $$
+begin
+  insert into public.profiles (id, email)
+  values (new.id, coalesce(new.email, ''))
+  on conflict (id) do update
+    set email = excluded.email,
+        updated_at = now();
+
+  return new;
+end;
+$$;
+
+drop trigger if exists on_auth_user_created on auth.users;
+create trigger on_auth_user_created
+  after insert on auth.users
+  for each row execute function public.handle_new_user();
+</file>
+
+<file path="tsconfig.json">
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "lib": ["DOM", "DOM.Iterable", "ES2022"],
+    "module": "ESNext",
+    "skipLibCheck": true,
+    "moduleResolution": "bundler",
+    "allowImportingTsExtensions": true,
+    "resolveJsonModule": true,
+    "isolatedModules": true,
+    "noEmit": true,
+    "jsx": "react-jsx",
+    "strict": true,
+    "baseUrl": ".",
+    "paths": {
+      "@/*": ["src/*"]
+    }
+  },
+  "include": ["src"]
+}
+</file>
+
+<file path="vite.config.ts">
+import path from "node:path";
+import tailwindcss from "@tailwindcss/vite";
+import { tanstackRouter } from "@tanstack/router-plugin/vite";
+import react from "@vitejs/plugin-react";
+import { defineConfig } from "vite";
+
+export default defineConfig({
+  plugins: [
+    tanstackRouter({
+      target: "react",
+      routesDirectory: "./src/routes",
+      generatedRouteTree: "./src/routeTree.gen.ts",
+      quoteStyle: "double",
+      semicolons: true,
+    }),
+    react(),
+    tailwindcss(),
+  ],
+  resolve: {
+    alias: {
+      "@": path.resolve(__dirname, "./src"),
+    },
+  },
+  build: {
+    rollupOptions: {
+      output: {
+        manualChunks: {
+          charts: ["recharts"],
+          excel: ["xlsx"],
+          supabase: ["@supabase/supabase-js"],
+          vendor: ["react", "react-dom", "@tanstack/react-router"],
+        },
+      },
+    },
+  },
+});
+</file>
+
+</files>

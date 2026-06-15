@@ -1,0 +1,12 @@
+node_modules/
+dist/
+.tanstack/tmp/
+
+.env
+.env.*
+!.env.example
+
+*.log
+vite.config.timestamp_*.js
+
+.vercel
