@@ -45,27 +45,58 @@ The content is organized as follows:
 index.html
 package.json
 src/components/AppShell.tsx
+src/integrations/supabase/audits.ts
 src/integrations/supabase/client.ts
 src/integrations/supabase/config.ts
 src/main.tsx
 src/routes/__root.tsx
 src/routes/_authenticated.tsx
 src/routes/_authenticated/audit.tsx
+src/routes/_authenticated/dashboard.tsx
 src/routes/_authenticated/history.tsx
-src/routes/_authenticated/index.tsx
 src/routes/_authenticated/tender-feed.tsx
 src/routes/auth.tsx
+src/routes/index.tsx
 src/routeTree.gen.ts
 src/styles.css
+src/utils/analytics-logic.ts
 src/vite-env.d.ts
 SUPABASE_SETUP.md
 supabase/migrations/001_initial_security.sql
 tsconfig.json
+vercel.json
 vite.config.ts
 </directory_structure>
 
 <files>
 This section contains the contents of the repository's files.
+
+<file path="src/utils/analytics-logic.ts">
+import { AuditRow } from "@/integrations/supabase/audits";
+
+export const calculateBoQVariance = (audit: AuditRow | null | undefined): number => {
+  if (!audit) return 0;
+
+  try {
+    const actual = Number(audit.contract_value || 0);
+    const analysis = (audit.analysis as any) || {};
+    
+    // Check multiple potential paths in the JSONB
+    const estimated = Number(
+      analysis.financial_assessment?.estimated_cost_etb || 
+      analysis.estimated_cost_etb || 
+      0
+    );
+
+    if (estimated === 0) return 0;
+    
+    const variance = ((actual - estimated) / estimated) * 100;
+    return isFinite(variance) ? variance : 0;
+  } catch (e) {
+    return 0;
+  }
+};
+</file>
 
 <file path=".env.example">
 VITE_SUPABASE_URL=https://your-project-ref.supabase.co
@@ -86,6 +117,8 @@ dist/
 
 *.log
 vite.config.timestamp_*.js
+
+.vercel
 </file>
 
 <file path="index.html">
@@ -337,14 +370,22 @@ function getConfigError() {
       return "VITE_SUPABASE_URL must start with https://.";
     }
 
-    if (url.hostname === "placeholder-project.supabase.co") {
+    if (
+      url.hostname === "placeholder-project.supabase.co" ||
+      url.hostname === "your-project-ref.supabase.co" ||
+      url.hostname === "your-project-ref.supabase.co"
+    ) {
       return "VITE_SUPABASE_URL is still using the placeholder project.";
     }
   } catch {
     return "VITE_SUPABASE_URL is not a valid URL.";
   }
 
-  if (rawSupabaseAnonKey.length < 20 || rawSupabaseAnonKey === "placeholder-anon-key") {
+  if (
+    rawSupabaseAnonKey.length < 20 ||
+    rawSupabaseAnonKey === "placeholder-anon-key" ||
+    rawSupabaseAnonKey === "your-supabase-anon-or-publishable-key"
+  ) {
     return "VITE_SUPABASE_ANON_KEY is missing or still using a placeholder value.";
   }
 
@@ -480,596 +521,107 @@ function AuthenticatedLayout() {
 }
 </file>
 
-<file path="src/routes/_authenticated/audit.tsx">
-import { createFileRoute, useSearch } from "@tanstack/react-router";
-import { useCallback, useEffect, useState } from "react";
-import { supabase } from "@/integrations/supabase/client";
+<file path="src/routes/_authenticated/dashboard.tsx">
+import { createFileRoute, Link } from "@tanstack/react-router";
+import { useAudits } from "@/integrations/supabase/audits";
 import {
-  Upload,
-  FileText,
-  Archive,
-  Sheet,
-  FileType,
-  File,
-  Loader2,
+  TrendingUp,
   AlertTriangle,
   CheckCircle2,
-  XCircle,
-  X,
-  Sparkles,
-  Download,
+  FileSearch,
+  ArrowRight,
+  Clock,
 } from "lucide-react";
-import * as XLSX from "xlsx";
+import {
+  ScatterChart,
+  Scatter,
+  XAxis,
+  YAxis,
+  CartesianGrid,
+  Tooltip,
+  ResponsiveContainer,
+  ReferenceDot,
+  Legend,
+} from "recharts";
 
-export const Route = createFileRoute("/_authenticated/audit")({
-  head: () => ({ meta: [{ title: "Bid Audit — Valtor" }] }),
-  component: AuditPage,
+export const Route = createFileRoute("/_authenticated/dashboard")({
+  head: () => ({ meta: [{ title: "Dashboard — Valtor" }] }),
+  component: DashboardPage,
 });
 
-type Analysis = {
-  executive_summary?: string;
-  risk_score?: number;
-  recommendation?: string;
-  financial_assessment?: {
-    estimated_cost_etb?: number;
-    projected_margin_pct?: number;
-    margin_gap_pct?: number;
-    cashflow_risk?: string;
-  };
-  risk_matrix?: Array<{ category: string; severity: string; likelihood: number; impact: string }>;
-  evaluation_matrix?: Array<{ criterion: string; score: number; weight: number; notes: string }>;
-  key_risks?: string[];
-  opportunities?: string[];
-  compliance_flags?: string[];
-};
-
-function fileIcon(name: string) {
-  const ext = name.split(".").pop()?.toLowerCase();
-  const cls = { width: 16, height: 16 };
-  if (ext === "pdf") return <FileText {...cls} color="#B91C1C" />;
-  if (ext === "zip") return <Archive {...cls} color="#B45309" />;
-  if (ext === "xlsx" || ext === "xls") return <Sheet {...cls} color="#15803D" />;
-  if (ext === "docx" || ext === "doc") return <FileType {...cls} color="#1D4ED8" />;
-  return <File {...cls} color="#6B7280" />;
+function formatEtb(n: number) {
+  if (n >= 1_000_000_000) return `${(n / 1_000_000_000).toFixed(1)}B ETB`;
+  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M ETB`;
+  return `${Math.round(n).toLocaleString()} ETB`;
 }
 
-function fmtSize(bytes: number) {
-  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(0)} KB`;
-  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
-}
+function DashboardPage() {
+  const { audits, loading } = useAudits();
 
-function truncName(name: string, max = 40) {
-  return name.length > max ? name.slice(0, max - 1) + "…" : name;
-}
+  const total = audits.length;
+  const totalValue = audits.reduce((s, a) => s + Number(a.contract_value || 0), 0);
+  const scoredAudits = audits.filter((a) => a.risk_score != null);
+  const avgRisk = scoredAudits.length
+    ? Math.round(scoredAudits.reduce((s, a) => s + Number(a.risk_score!), 0) / scoredAudits.length)
+    : null;
+  const proceed = audits.filter((a) => a.analysis?.recommendation === "PROCEED").length;
 
-function fileToBase64(file: File): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const r = new FileReader();
-    r.onload = () => resolve((r.result as string).split(",")[1] ?? "");
-    r.onerror = reject;
-    r.readAsDataURL(file);
-  });
-}
-
-function exportToExcel(analysis: Analysis, projectName: string) {
-  const wb = XLSX.utils.book_new();
-
-  // Sheet 1 — Evaluation Matrix
-  if (Array.isArray(analysis.evaluation_matrix) && analysis.evaluation_matrix.length > 0) {
-    const evalData = [
-      ["Criterion", "Score (0–10)", "Weight (%)", "Weighted Score", "Notes"],
-      ...analysis.evaluation_matrix.map((r) => [
-        r.criterion,
-        r.score,
-        `${(r.weight * 100).toFixed(0)}%`,
-        (r.score * r.weight).toFixed(2),
-        r.notes,
-      ]),
-    ];
-    XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(evalData), "Evaluation Matrix");
-  }
-
-  // Sheet 2 — Risk Matrix
-  if (Array.isArray(analysis.risk_matrix) && analysis.risk_matrix.length > 0) {
-    const riskData = [
-      ["Category", "Severity", "Likelihood (%)", "Impact"],
-      ...analysis.risk_matrix.map((r) => [r.category, r.severity, r.likelihood, r.impact]),
-    ];
-    XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(riskData), "Risk Matrix");
-  }
-
-  // Sheet 3 — BoQ Skeleton
-  const boqData = [
-    ["#", "Item", "Description", "Unit", "Qty", "Unit Rate (ETB)", "Total (ETB)"],
-    [1, "Mobilisation", "Site mobilisation & preliminary works", "LS", 1, 2_500_000, 2_500_000],
-    [2, "Earthworks", "Bulk excavation & fill", "m³", 8_400, 850, 7_140_000],
-    [3, "Concrete Works", "Foundation concrete C25/30", "m³", 1_200, 12_500, 15_000_000],
-    [4, "Reinforcement", "Grade 60 rebar supply & fix", "ton", 180, 85_000, 15_300_000],
-    [5, "Masonry", "Block wall construction", "m²", 3_600, 4_200, 15_120_000],
-    [6, "Roofing", "IBR sheet roofing system", "m²", 2_100, 6_800, 14_280_000],
-    [7, "MEP", "Mechanical, electrical & plumbing", "LS", 1, 18_000_000, 18_000_000],
-    [8, "Finishes", "Internal & external finishes", "m²", 5_400, 3_500, 18_900_000],
-    ["", "", "", "", "", "TOTAL", { f: "SUM(G2:G9)" }],
+  const cards = [
+    { label: "Total Bids Audited", value: loading ? "---" : total.toString(), icon: FileSearch, color: "#0F2240" },
+    { label: "Portfolio Value", value: loading ? "---" : formatEtb(totalValue), icon: TrendingUp, color: "#1D4ED8" },
+    { label: "Avg Risk Score", value: loading ? "---" : avgRisk !== null ? `${avgRisk}/100` : "—", icon: AlertTriangle, color: "#B45309" },
+    { label: "Recommended", value: loading ? "---" : proceed.toString(), icon: CheckCircle2, color: "#15803D" },
   ];
-  XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(boqData), "BoQ Skeleton");
-
-  const date = new Date().toISOString().slice(0, 10);
-  const safeName = projectName.replace(/[^a-zA-Z0-9]/g, "_").slice(0, 30);
-  XLSX.writeFile(wb, `Valtor_BoQ_${safeName}_${date}.xlsx`);
-}
-
-function severityBadge(s: string) {
-  const k = s?.toUpperCase();
-  if (k === "CRITICAL") return <span className="badge badge-red">Critical</span>;
-  if (k === "HIGH") return <span className="badge badge-red" style={{ background: "#FEF2F2", color: "#B91C1C" }}>High</span>;
-  if (k === "MEDIUM") return <span className="badge badge-amber">Medium</span>;
-  return <span className="badge badge-green">Low</span>;
-}
-
-function recBadge(r?: string) {
-  if (r === "PROCEED") return <span className="badge badge-green" style={{ fontSize: "0.75rem", padding: "0.3rem 0.75rem" }}>✓ Proceed</span>;
-  if (r === "DECLINE") return <span className="badge badge-red" style={{ fontSize: "0.75rem", padding: "0.3rem 0.75rem" }}>✗ Decline</span>;
-  return <span className="badge badge-amber" style={{ fontSize: "0.75rem", padding: "0.3rem 0.75rem" }}>⚠ Proceed with Caution</span>;
-}
-
-function AuditPage() {
-  const search = useSearch({ from: "/_authenticated/audit" });
-  const prefilledProject = (search as any)?.project ?? "";
-
-  const [files, setFiles] = useState<File[]>([]);
-  const [projectName, setProjectName] = useState(prefilledProject);
-  const [contractValue, setContractValue] = useState("");
-  const [targetMargin, setTargetMargin] = useState("15");
-  const [loading, setLoading] = useState(false);
-  const [analysis, setAnalysis] = useState<Analysis | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const [dragOver, setDragOver] = useState(false);
-
-  useEffect(() => {
-    if (prefilledProject) setProjectName(prefilledProject);
-  }, [prefilledProject]);
-
-  const addFiles = useCallback((incoming: FileList | null) => {
-    if (!incoming) return;
-    setFiles((prev) => {
-      const existing = new Set(prev.map((f) => f.name));
-      const novel = Array.from(incoming).filter((f) => !existing.has(f.name));
-      return [...prev, ...novel];
-    });
-  }, []);
-
-  const onDrop = useCallback(
-    (e: React.DragEvent) => {
-      e.preventDefault();
-      setDragOver(false);
-      addFiles(e.dataTransfer.files);
-    },
-    [addFiles],
-  );
-
-  const removeFile = (index: number) => {
-    setFiles((prev) => prev.filter((_, i) => i !== index));
-  };
-
-  const runAudit = async () => {
-    setError(null);
-    setAnalysis(null);
-    if (!projectName.trim()) return setError("Project name is required.");
-    if (!contractValue) return setError("Contract value is required.");
-    const apiKey = import.meta.env.VITE_GEMINI_API_KEY as string | undefined;
-    if (!apiKey) return setError("VITE_GEMINI_API_KEY is not configured in environment.");
-    setLoading(true);
-
-    try {
-      const firstPdf = files.find((f) => f.name.toLowerCase().endsWith(".pdf"));
-      const fileBase64 = firstPdf ? await fileToBase64(firstPdf) : undefined;
-      const fileNames = files.length > 0 ? files.map((f) => f.name).join(", ") : "n/a";
-
-      const systemPrompt = `You are Valtor AI, an executive construction tender risk analyst for the Ethiopian market.
-Analyze the provided tender data and return ONLY a strict JSON object — no markdown, no commentary.
-Required shape:
-{
-  "executive_summary": string,
-  "risk_score": number (0–100, higher = more risk),
-  "recommendation": "PROCEED" | "PROCEED_WITH_CAUTION" | "DECLINE",
-  "financial_assessment": {
-    "estimated_cost_etb": number,
-    "projected_margin_pct": number,
-    "margin_gap_pct": number,
-    "cashflow_risk": "LOW" | "MEDIUM" | "HIGH"
-  },
-  "risk_matrix": [
-    { "category": string, "severity": "LOW"|"MEDIUM"|"HIGH"|"CRITICAL", "likelihood": number (0–100), "impact": string }
-  ],
-  "evaluation_matrix": [
-    { "criterion": string, "score": number (0–10), "weight": number (0–1), "notes": string }
-  ],
-  "key_risks": string[],
-  "opportunities": string[],
-  "compliance_flags": string[]
-}`;
-
-      const userText = `Project: ${projectName}
-Files submitted: ${fileNames}
-Contract Value: ${contractValue} ETB
-Target Margin: ${targetMargin}%
-
-Perform a thorough executive risk audit: assess financial viability against the contract value and target margin, identify key risks and compliance concerns, and produce a weighted evaluation matrix.`;
-
-      const parts: any[] = [{ text: userText }];
-      if (fileBase64 && firstPdf) {
-        parts.push({ inline_data: { mime_type: "application/pdf", data: fileBase64 } });
-      }
-
-      const res = await fetch(
-        `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${apiKey}`,
-        {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            system_instruction: { parts: [{ text: systemPrompt }] },
-            contents: [{ role: "user", parts }],
-            generationConfig: { response_mime_type: "application/json", temperature: 0.15 },
-          }),
-        },
-      );
-
-      if (!res.ok) {
-        const txt = await res.text();
-        throw new Error(`API error (${res.status}): ${txt.slice(0, 200)}`);
-      }
-
-      const data = await res.json();
-      let text = data?.candidates?.[0]?.content?.parts?.[0]?.text ?? "{}";
-      text = text.replace(/```json/gi, "").replace(/```/g, "").trim();
-
-      let a: Analysis;
-      try {
-        a = JSON.parse(text) as Analysis;
-      } catch {
-        throw new Error("Failed to parse AI response as JSON. Check your Gemini API key and quota.");
-      }
-      setAnalysis(a);
-
-      const { data: userData } = await supabase.auth.getUser();
-      if (userData.user) {
-        await supabase.from("audits").insert({
-          user_id: userData.user.id,
-          project_name: projectName,
-          file_name: files[0]?.name ?? null,
-          contract_value: Number(contractValue),
-          target_margin: Number(targetMargin),
-          risk_score: a.risk_score ?? null,
-          status: "completed",
-          analysis: a,
-        });
-      }
-    } catch (e) {
-      setError((e as Error).message);
-    } finally {
-      setLoading(false);
-    }
-  };
 
   return (
     <div>
-      <div className="page-header">
-        <div className="page-title">Bid Audit</div>
-        <div className="page-subtitle">Upload tender documents, configure financials, and generate a structured AI risk evaluation.</div>
+      <div className="page-header" style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-end" }}>
+        <div>
+          <div className="page-title">Dashboard</div>
+          <div className="page-subtitle">Real-time portfolio intelligence</div>
+        </div>
+        <Link to="/audit" className="btn-primary"><FileSearch size={14} /> New Audit</Link>
       </div>
 
-      <div style={{ display: "grid", gridTemplateColumns: "340px 1fr", gap: "1.5rem", alignItems: "start" }}>
-        {/* Left — Input panel */}
-        <div className="panel" style={{ padding: "1.25rem" }}>
-          <div style={{ display: "flex", flexDirection: "column", gap: "1rem" }}>
-            {/* Project name */}
-            <div>
-              <label className="section-label">Project name</label>
-              <input
-                value={projectName}
-                onChange={(e) => setProjectName(e.target.value)}
-                className="field-input"
-                placeholder="Addis Ring Road Phase III"
-              />
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(200px, 1fr))", gap: "1rem", marginBottom: "1.5rem" }}>
+        {cards.map((c) => (
+          <div className="stat-card" key={c.label}>
+            <div style={{ display: "flex", justifyContent: "space-between", marginBottom: "0.75rem" }}>
+              <div className="stat-label">{c.label}</div>
+              <c.icon size={14} color={c.color} />
             </div>
-
-            {/* Dropzone */}
-            <div>
-              <label className="section-label">Documents</label>
-              <div
-                className={`dropzone${dragOver ? " active" : ""}`}
-                onDragOver={(e) => { e.preventDefault(); setDragOver(true); }}
-                onDragLeave={() => setDragOver(false)}
-                onDrop={onDrop}
-              >
-                <input
-                  id="file-input"
-                  type="file"
-                  accept=".pdf,.zip,.xlsx,.xls,.docx,.doc"
-                  multiple
-                  className="hidden"
-                  onChange={(e) => addFiles(e.target.files)}
-                />
-                <label htmlFor="file-input" style={{ cursor: "pointer", display: "block" }}>
-                  <Upload size={20} color="#9CA3AF" style={{ margin: "0 auto 0.5rem" }} />
-                  <div style={{ fontSize: "0.8125rem", fontWeight: 500, color: "#374151" }}>
-                    Drop files or click to browse
-                  </div>
-                  <div style={{ fontSize: "0.6875rem", color: "#9CA3AF", marginTop: "0.25rem" }}>
-                    PDF, ZIP, XLSX, DOCX accepted
-                  </div>
-                </label>
-              </div>
-
-              {/* File queue */}
-              {files.length > 0 && (
-                <div className="panel" style={{ marginTop: "0.625rem", overflow: "hidden" }}>
-                  {files.map((f, i) => (
-                    <div className="file-row" key={i}>
-                      <div style={{ flexShrink: 0 }}>{fileIcon(f.name)}</div>
-                      <div style={{ flex: 1, minWidth: 0 }}>
-                        <div style={{ fontSize: "0.75rem", fontWeight: 500, color: "#0D1117", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                          {truncName(f.name)}
-                        </div>
-                        <div style={{ fontSize: "0.625rem", color: "#9CA3AF" }}>{fmtSize(f.size)}</div>
-                      </div>
-                      <button
-                        onClick={() => removeFile(i)}
-                        className="btn-ghost"
-                        style={{ padding: "0.25rem", flexShrink: 0 }}
-                      >
-                        <X size={13} />
-                      </button>
-                    </div>
-                  ))}
-                </div>
-              )}
-            </div>
-
-            {/* Contract value */}
-            <div>
-              <label className="section-label">Contract value (ETB)</label>
-              <input
-                type="number"
-                value={contractValue}
-                onChange={(e) => setContractValue(e.target.value)}
-                className="field-input"
-                placeholder="125,000,000"
-              />
-            </div>
-
-            {/* Target margin */}
-            <div>
-              <label className="section-label">Target margin (%)</label>
-              <input
-                type="number"
-                step="0.1"
-                value={targetMargin}
-                onChange={(e) => setTargetMargin(e.target.value)}
-                className="field-input"
-              />
-            </div>
-
-            {error && (
-              <div style={{ background: "#FEF2F2", border: "1px solid #FECACA", borderRadius: "4px", padding: "0.625rem 0.875rem", fontSize: "0.8125rem", color: "#B91C1C" }}>
-                {error}
-              </div>
-            )}
-
-            <button onClick={runAudit} disabled={loading} className="btn-primary" style={{ width: "100%", justifyContent: "center", padding: "0.625rem" }}>
-              {loading ? (
-                <><Loader2 size={14} className="animate-spin" /> Analysing…</>
-              ) : (
-                <><Sparkles size={14} /> Run Audit{files.length > 0 ? ` (${files.length} file${files.length > 1 ? "s" : ""})` : ""}</>
-              )}
-            </button>
+            <div className="stat-value">{c.value}</div>
           </div>
-        </div>
-
-        {/* Right — Results */}
-        <div style={{ minHeight: "60vh" }}>
-          {!analysis && !loading && (
-            <div className="panel" style={{ padding: "4rem 2rem", textAlign: "center", color: "#9CA3AF" }}>
-              <Sparkles size={32} style={{ margin: "0 auto 1rem", opacity: 0.3 }} />
-              <div style={{ fontWeight: 600, color: "#374151", fontSize: "0.9375rem", marginBottom: "0.375rem" }}>
-                Ready for analysis
-              </div>
-              <div style={{ fontSize: "0.8125rem" }}>Configure a project and click Run Audit to generate your risk report.</div>
-            </div>
-          )}
-
-          {loading && (
-            <div className="panel" style={{ padding: "4rem 2rem", textAlign: "center" }}>
-              <Loader2 size={28} className="animate-spin" color="#0F2240" style={{ margin: "0 auto 1rem" }} />
-              <div style={{ fontWeight: 600, color: "#0D1117", fontSize: "0.9375rem" }}>Running AI analysis…</div>
-              <div style={{ fontSize: "0.8125rem", color: "#6B7280", marginTop: "0.375rem" }}>Evaluating tender package against financial parameters</div>
-            </div>
-          )}
-
-          {analysis && (
-            <Results
-              analysis={analysis}
-              projectName={projectName}
-              onExport={() => exportToExcel(analysis, projectName)}
-            />
-          )}
-        </div>
-      </div>
-    </div>
-  );
-}
-
-function Results({ analysis, projectName, onExport }: { analysis: Analysis; projectName: string; onExport: () => void }) {
-  const r = Number(analysis.risk_score) || 0;
-  const riskClass = r < 35 ? "risk-low" : r < 65 ? "risk-medium" : "risk-high";
-
-  return (
-    <div style={{ display: "flex", flexDirection: "column", gap: "1rem" }}>
-      {/* Top actions bar */}
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-        <div style={{ fontSize: "0.8125rem", color: "#6B7280" }}>
-          Analysis for <strong style={{ color: "#0D1117" }}>{projectName}</strong>
-        </div>
-        <button onClick={onExport} className="btn-secondary">
-          <Download size={13} />
-          Export BoQ & Risk Matrix
-        </button>
+        ))}
       </div>
 
-      {/* Summary + Risk score */}
-      <div style={{ display: "grid", gridTemplateColumns: "1fr auto", gap: "1rem" }}>
-        <div className="panel" style={{ padding: "1.25rem" }}>
-          <div className="section-label">Executive Summary</div>
-          <p style={{ fontSize: "0.8125rem", lineHeight: 1.6, color: "#374151" }}>
-            {analysis.executive_summary ?? "—"}
-          </p>
+      <div className="panel">
+        <div style={{ padding: "1rem 1.25rem", borderBottom: "1px solid #E4E7EC", display: "flex", justifyContent: "space-between" }}>
+          <div style={{ fontWeight: 600 }}>Recent Pipeline</div>
+          <Link to="/history" style={{ fontSize: "0.75rem", color: "#1D4ED8", display: "flex", alignItems: "center" }}>
+            View all <ArrowRight size={12} />
+          </Link>
         </div>
-        <div className="panel" style={{ padding: "1.25rem", textAlign: "center", minWidth: "140px", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center" }}>
-          <div className="section-label">Risk Score</div>
-          <div className={riskClass} style={{ fontSize: "3rem", fontWeight: 800, letterSpacing: "-0.04em", lineHeight: 1 }}>
-            {Math.round(r)}
-          </div>
-          <div style={{ fontSize: "0.6875rem", color: "#9CA3AF", marginBottom: "0.75rem" }}>out of 100</div>
-          {analysis.recommendation && recBadge(analysis.recommendation)}
-        </div>
-      </div>
 
-      {/* Financial assessment */}
-      {analysis.financial_assessment && typeof analysis.financial_assessment === "object" && (
-        <div className="panel" style={{ padding: "1.25rem" }}>
-          <div className="section-label">Financial Assessment</div>
-          <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: "1.25rem" }}>
-            {[
-              { label: "Estimated Cost", value: analysis.financial_assessment.estimated_cost_etb ? `${Math.round(Number(analysis.financial_assessment.estimated_cost_etb)).toLocaleString()} ETB` : "—" },
-              { label: "Projected Margin", value: analysis.financial_assessment.projected_margin_pct != null ? `${Number(analysis.financial_assessment.projected_margin_pct)}%` : "—" },
-              { label: "Margin Gap", value: analysis.financial_assessment.margin_gap_pct != null ? `${Number(analysis.financial_assessment.margin_gap_pct)}%` : "—" },
-              { label: "Cashflow Risk", value: String(analysis.financial_assessment.cashflow_risk ?? "—") },
-            ].map(({ label, value }) => (
-              <div key={label}>
-                <div style={{ fontSize: "0.6875rem", color: "#9CA3AF", marginBottom: "0.25rem" }}>{label}</div>
-                <div style={{ fontSize: "1rem", fontWeight: 600, color: "#0D1117" }}>{value}</div>
-              </div>
-            ))}
-          </div>
-        </div>
-      )}
-
-      {/* Risk matrix */}
-      {Array.isArray(analysis.risk_matrix) && analysis.risk_matrix.length > 0 && (
-        <div className="panel" style={{ overflow: "hidden" }}>
-          <div style={{ padding: "1rem 1.25rem", borderBottom: "1px solid #E4E7EC", display: "flex", alignItems: "center", gap: "0.5rem" }}>
-            <AlertTriangle size={13} color="#B45309" />
-            <div style={{ fontWeight: 600, fontSize: "0.8125rem" }}>Risk Matrix</div>
-          </div>
+        {loading ? (
+          <div className="empty-state"><Clock size={24} className="animate-spin" /></div>
+        ) : (
           <table className="data-table">
             <thead>
-              <tr>
-                <th>Severity</th>
-                <th>Category</th>
-                <th>Impact</th>
-                <th className="text-right">Likelihood</th>
-              </tr>
+              <tr><th>Project</th><th className="text-right">Value</th><th className="text-right">Risk</th></tr>
             </thead>
             <tbody>
-              {analysis.risk_matrix.map((row, i) => (
-                <tr key={i}>
-                  <td>{severityBadge(String(row.severity || ""))}</td>
-                  <td style={{ fontWeight: 500 }}>{String(row.category || "—")}</td>
-                  <td className="muted">{String(row.impact || "—")}</td>
-                  <td className="text-right muted">{Number(row.likelihood) || 0}%</td>
+              {audits.slice(0, 5).map((a) => (
+                <tr key={a.id}>
+                  <td>{a.project_name}</td>
+                  <td className="text-right">{formatEtb(a.contract_value)}</td>
+                  <td className="text-right">{a.risk_score ?? "—"}</td>
                 </tr>
               ))}
             </tbody>
           </table>
-        </div>
-      )}
-
-      {/* Evaluation matrix */}
-      {Array.isArray(analysis.evaluation_matrix) && analysis.evaluation_matrix.length > 0 && (
-        <div className="panel" style={{ overflow: "hidden" }}>
-          <div style={{ padding: "1rem 1.25rem", borderBottom: "1px solid #E4E7EC" }}>
-            <div style={{ fontWeight: 600, fontSize: "0.8125rem" }}>Evaluation Matrix</div>
-          </div>
-          <table className="data-table">
-            <thead>
-              <tr>
-                <th>Criterion</th>
-                <th>Notes</th>
-                <th className="text-right">Score</th>
-                <th className="text-right">Weight</th>
-                <th className="text-right">Weighted</th>
-              </tr>
-            </thead>
-            <tbody>
-              {analysis.evaluation_matrix.map((row, i) => (
-                <tr key={i}>
-                  <td style={{ fontWeight: 500 }}>{String(row.criterion || "—")}</td>
-                  <td className="muted">{String(row.notes || "")}</td>
-                  <td className="text-right">{Number(row.score) || 0}/10</td>
-                  <td className="text-right muted">{(Number(row.weight || 0) * 100).toFixed(0)}%</td>
-                  <td className="text-right" style={{ fontWeight: 600, color: "#0F2240" }}>
-                    {(Number(row.score || 0) * Number(row.weight || 0)).toFixed(2)}
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      )}
-
-      {/* Risks & Opportunities */}
-      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "1rem" }}>
-        {Array.isArray(analysis.key_risks) && analysis.key_risks.length > 0 && (
-          <div className="panel" style={{ padding: "1.25rem" }}>
-            <div style={{ display: "flex", alignItems: "center", gap: "0.375rem", marginBottom: "0.75rem" }}>
-              <XCircle size={13} color="#B91C1C" />
-              <div style={{ fontSize: "0.6875rem", fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.07em", color: "#B91C1C" }}>Key Risks</div>
-            </div>
-            <ul style={{ display: "flex", flexDirection: "column", gap: "0.5rem" }}>
-              {analysis.key_risks.map((it, i) => (
-                <li key={i} style={{ display: "flex", gap: "0.5rem", fontSize: "0.8125rem" }}>
-                  <span style={{ color: "#B91C1C", flexShrink: 0 }}>•</span>
-                  <span style={{ color: "#374151" }}>{String(it)}</span>
-                </li>
-              ))}
-            </ul>
-          </div>
-        )}
-        {Array.isArray(analysis.opportunities) && analysis.opportunities.length > 0 && (
-          <div className="panel" style={{ padding: "1.25rem" }}>
-            <div style={{ display: "flex", alignItems: "center", gap: "0.375rem", marginBottom: "0.75rem" }}>
-              <CheckCircle2 size={13} color="#15803D" />
-              <div style={{ fontSize: "0.6875rem", fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.07em", color: "#15803D" }}>Opportunities</div>
-            </div>
-            <ul style={{ display: "flex", flexDirection: "column", gap: "0.5rem" }}>
-              {analysis.opportunities.map((it, i) => (
-                <li key={i} style={{ display: "flex", gap: "0.5rem", fontSize: "0.8125rem" }}>
-                  <span style={{ color: "#15803D", flexShrink: 0 }}>•</span>
-                  <span style={{ color: "#374151" }}>{String(it)}</span>
-                </li>
-              ))}
-            </ul>
-          </div>
         )}
       </div>
-
-      {/* Compliance flags */}
-      {Array.isArray(analysis.compliance_flags) && analysis.compliance_flags.length > 0 && (
-        <div className="panel" style={{ padding: "1.25rem" }}>
-          <div style={{ display: "flex", alignItems: "center", gap: "0.375rem", marginBottom: "0.75rem" }}>
-            <AlertTriangle size={13} color="#B45309" />
-            <div style={{ fontSize: "0.6875rem", fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.07em", color: "#B45309" }}>Compliance Flags</div>
-          </div>
-          <ul style={{ display: "flex", flexDirection: "column", gap: "0.5rem" }}>
-            {analysis.compliance_flags.map((it, i) => (
-              <li key={i} style={{ display: "flex", gap: "0.5rem", fontSize: "0.8125rem" }}>
-                <span style={{ color: "#B45309", flexShrink: 0 }}>⚠</span>
-                <span style={{ color: "#374151" }}>{String(it)}</span>
-              </li>
-            ))}
-          </ul>
-        </div>
-      )}
     </div>
   );
 }
@@ -1078,7 +630,7 @@ function Results({ analysis, projectName, onExport }: { analysis: Analysis; proj
 <file path="src/routes/_authenticated/history.tsx">
 import { createFileRoute } from "@tanstack/react-router";
 import { useEffect, useRef, useState } from "react";
-import { supabase } from "@/integrations/supabase/client";
+import { deleteAudit, useAudits } from "@/integrations/supabase/audits";
 import {
   Trash2,
   FileText,
@@ -1200,35 +752,22 @@ function ActionsMenu({ onAction }: { onAction: (action: string) => void }) {
 }
 
 function HistoryPage() {
-  const [rows, setRows] = useState<AuditRow[]>([]);
-  const [loading, setLoading] = useState(true);
+  const { audits, loading, reload } = useAudits();
   const [selected, setSelected] = useState<AuditRow | null>(null);
   const [workflow, setWorkflow] = useState<Record<string, WorkflowStatus>>({});
 
-  const load = () => {
-    setLoading(true);
-    supabase
-      .from("audits")
-      .select("*")
-      .order("created_at", { ascending: false })
-      .then(({ data }) => {
-        const rows = (data as AuditRow[]) ?? [];
-        setRows(rows);
-        setWorkflow((prev) => {
-          const next = { ...prev };
-          rows.forEach((r) => { if (!next[r.id]) next[r.id] = "Draft"; });
-          return next;
-        });
-        setLoading(false);
-      });
-  };
-
-  useEffect(load, []);
+  useEffect(() => {
+    setWorkflow((prev) => {
+      const next = { ...prev };
+      audits.forEach((r) => { if (!next[r.id]) next[r.id] = "Draft"; });
+      return next;
+    });
+  }, [audits]);
 
   const remove = async (id: string) => {
-    await supabase.from("audits").delete().eq("id", id);
+    await deleteAudit(id);
     if (selected?.id === id) setSelected(null);
-    load();
+    reload();
   };
 
   const setStatus = (id: string, status: string) => {
@@ -1248,7 +787,7 @@ function HistoryPage() {
             <Clock size={24} style={{ margin: "0 auto 0.5rem", opacity: 0.3 }} />
             <p>Loading records…</p>
           </div>
-        ) : rows.length === 0 ? (
+        ) : audits.length === 0 ? (
           <div className="empty-state">
             <History size={28} style={{ margin: "0 auto 0.5rem", opacity: 0.25 }} />
             <p>No audits recorded yet. Run your first bid audit to see it here.</p>
@@ -1270,7 +809,7 @@ function HistoryPage() {
                 </tr>
               </thead>
               <tbody>
-                {rows.map((r) => (
+                {audits.map((r) => (
                   <tr
                     key={r.id}
                     style={{ cursor: "pointer" }}
@@ -1386,317 +925,6 @@ function HistoryPage() {
           </div>
         </div>
       )}
-    </div>
-  );
-}
-</file>
-
-<file path="src/routes/_authenticated/index.tsx">
-import { createFileRoute, Link } from "@tanstack/react-router";
-import { useEffect, useState } from "react";
-import { supabase } from "@/integrations/supabase/client";
-import {
-  TrendingUp,
-  AlertTriangle,
-  CheckCircle2,
-  FileSearch,
-  ArrowRight,
-  Clock,
-} from "lucide-react";
-import {
-  ScatterChart,
-  Scatter,
-  XAxis,
-  YAxis,
-  CartesianGrid,
-  Tooltip,
-  ResponsiveContainer,
-  ReferenceDot,
-  Legend,
-} from "recharts";
-
-export const Route = createFileRoute("/_authenticated/")({
-  head: () => ({ meta: [{ title: "Dashboard — Valtor" }] }),
-  component: Dashboard,
-});
-
-type AuditRow = {
-  id: string;
-  project_name: string;
-  contract_value: number;
-  target_margin: number;
-  risk_score: number | null;
-  status: string;
-  created_at: string;
-  analysis: any;
-};
-
-// 20 historical benchmark data points — Ethiopian construction market
-const HISTORICAL_BIDS = [
-  { id: 1, project: "Addis Ring Road Ph.1", risk: 28, margin: 18, status: "Won" },
-  { id: 2, project: "Bole Sub-City Office Block", risk: 44, margin: 14, status: "Won" },
-  { id: 3, project: "Hawassa Industrial Park Ext.", risk: 71, margin: 22, status: "Lost" },
-  { id: 4, project: "Adama Wind Farm Access Road", risk: 35, margin: 16, status: "Won" },
-  { id: 5, project: "Mekelle Hospital Annex", risk: 58, margin: 19, status: "Lost" },
-  { id: 6, project: "Dire Dawa Rail Depot", risk: 62, margin: 12, status: "Lost" },
-  { id: 7, project: "Jimma University STEM Block", risk: 22, margin: 15, status: "Won" },
-  { id: 8, project: "Bishoftu Water Treatment", risk: 41, margin: 17, status: "Won" },
-  { id: 9, project: "Dessie–Kombolcha Bypass", risk: 55, margin: 20, status: "Lost" },
-  { id: 10, project: "Lideta Mixed-Use Tower", risk: 67, margin: 25, status: "Won" },
-  { id: 11, project: "Sebeta Cement Plant Road", risk: 30, margin: 13, status: "Won" },
-  { id: 12, project: "Gondar Heritage Restoration", risk: 49, margin: 21, status: "Lost" },
-  { id: 13, project: "Ayat Residential Phase IV", risk: 25, margin: 15, status: "Won" },
-  { id: 14, project: "Bole Lemi Industrial B1", risk: 38, margin: 16, status: "Won" },
-  { id: 15, project: "Nekemte Health Cluster", risk: 60, margin: 18, status: "Lost" },
-  { id: 16, project: "Assosa Airport Expansion", risk: 74, margin: 24, status: "Lost" },
-  { id: 17, project: "Modjo–Hawassa Expressway", risk: 80, margin: 28, status: "Lost" },
-  { id: 18, project: "Sheger City Phase I", risk: 32, margin: 14, status: "Won" },
-  { id: 19, project: "Wonji Bridge Rehabilitation", risk: 47, margin: 17, status: "Won" },
-  { id: 20, project: "Arba Minch University Hall", risk: 20, margin: 12, status: "Won" },
-];
-
-function formatEtb(n: number) {
-  if (n >= 1_000_000_000) return `${(n / 1_000_000_000).toFixed(1)}B ETB`;
-  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M ETB`;
-  return `${Math.round(n).toLocaleString()} ETB`;
-}
-
-function riskClass(score: number | null) {
-  if (score === null) return "";
-  if (score < 35) return "risk-low";
-  if (score < 65) return "risk-medium";
-  return "risk-high";
-}
-
-function recBadge(rec?: string) {
-  if (!rec) return <span className="badge badge-slate">—</span>;
-  if (rec === "PROCEED") return <span className="badge badge-green">Proceed</span>;
-  if (rec === "DECLINE") return <span className="badge badge-red">Decline</span>;
-  return <span className="badge badge-amber">Caution</span>;
-}
-
-const CustomTooltip = ({ active, payload }: any) => {
-  if (active && payload && payload.length) {
-    const d = payload[0].payload;
-    return (
-      <div className="panel" style={{ padding: "0.625rem 0.875rem", fontSize: "0.75rem", minWidth: "160px" }}>
-        <div style={{ fontWeight: 600, marginBottom: "0.25rem", color: "#0D1117" }}>{d.project}</div>
-        <div style={{ color: "#6B7280" }}>Risk: <strong style={{ color: "#0D1117" }}>{d.risk}</strong></div>
-        <div style={{ color: "#6B7280" }}>Margin: <strong style={{ color: "#0D1117" }}>{d.margin}%</strong></div>
-        <div style={{ marginTop: "0.25rem" }}>
-          <span className={`badge ${d.status === "Won" ? "badge-green" : "badge-red"}`}>{d.status}</span>
-        </div>
-      </div>
-    );
-  }
-  return null;
-};
-
-function Dashboard() {
-  const [audits, setAudits] = useState<AuditRow[]>([]);
-  const [loading, setLoading] = useState(true);
-
-  useEffect(() => {
-    supabase
-      .from("audits")
-      .select("*")
-      .order("created_at", { ascending: false })
-      .limit(50)
-      .then(({ data }) => {
-        setAudits((data as AuditRow[]) ?? []);
-        setLoading(false);
-      });
-  }, []);
-
-  const total = audits.length;
-  const totalValue = audits.reduce((s, a) => s + Number(a.contract_value || 0), 0);
-  const scoredAudits = audits.filter((a) => a.risk_score != null);
-  const avgRisk = scoredAudits.length
-    ? Math.round(scoredAudits.reduce((s, a) => s + Number(a.risk_score!), 0) / scoredAudits.length)
-    : null;
-  const avgMargin = scoredAudits.length
-    ? parseFloat((scoredAudits.reduce((s, a) => s + Number(a.target_margin), 0) / scoredAudits.length).toFixed(1))
-    : null;
-  const proceed = audits.filter((a) => a.analysis?.recommendation === "PROCEED").length;
-
-  const wonBids = HISTORICAL_BIDS.filter((b) => b.status === "Won");
-  const lostBids = HISTORICAL_BIDS.filter((b) => b.status === "Lost");
-
-  const cards = [
-    {
-      label: "Total Bids Audited",
-      value: total.toString(),
-      icon: FileSearch,
-      color: "#0F2240",
-      delta: "all time",
-    },
-    {
-      label: "Portfolio Value",
-      value: formatEtb(totalValue),
-      icon: TrendingUp,
-      color: "#1D4ED8",
-      delta: "under evaluation",
-    },
-    {
-      label: "Avg Risk Score",
-      value: avgRisk !== null ? `${avgRisk}/100` : "—",
-      icon: AlertTriangle,
-      color: avgRisk !== null && avgRisk >= 65 ? "#B91C1C" : avgRisk !== null && avgRisk >= 35 ? "#B45309" : "#15803D",
-      delta: "lower is better",
-    },
-    {
-      label: "Recommended",
-      value: proceed.toString(),
-      icon: CheckCircle2,
-      color: "#15803D",
-      delta: `${total ? Math.round((proceed / total) * 100) : 0}% approval rate`,
-    },
-  ];
-
-  return (
-    <div>
-      {/* Page header */}
-      <div className="page-header" style={{ display: "flex", alignItems: "flex-end", justifyContent: "space-between", gap: "1rem" }}>
-        <div>
-          <div className="page-title">Dashboard</div>
-          <div className="page-subtitle">Portfolio intelligence across all active tenders</div>
-        </div>
-        <Link to="/audit" className="btn-primary">
-          <FileSearch size={14} />
-          New Audit
-        </Link>
-      </div>
-
-      {/* KPI cards */}
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(200px, 1fr))", gap: "1rem", marginBottom: "1.5rem" }}>
-        {cards.map((c) => (
-          <div className="stat-card" key={c.label}>
-            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: "0.75rem" }}>
-              <div className="stat-label">{c.label}</div>
-              <div style={{ width: "28px", height: "28px", background: "#F7F8FA", border: "1px solid #E4E7EC", borderRadius: "5px", display: "flex", alignItems: "center", justifyContent: "center" }}>
-                <c.icon size={14} color={c.color} />
-              </div>
-            </div>
-            <div className="stat-value" style={{ color: c.color }}>{c.value}</div>
-            <div className="stat-delta">{c.delta}</div>
-          </div>
-        ))}
-      </div>
-
-      {/* Pipeline table */}
-      <div className="panel" style={{ marginBottom: "1.5rem", overflow: "hidden" }}>
-        <div style={{ padding: "1rem 1.25rem", borderBottom: "1px solid #E4E7EC", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-          <div style={{ fontWeight: 600, fontSize: "0.875rem", color: "#0D1117" }}>Recent Pipeline</div>
-          <Link to="/history" style={{ display: "flex", alignItems: "center", gap: "0.25rem", fontSize: "0.75rem", color: "#1D4ED8", textDecoration: "none" }}>
-            View all <ArrowRight size={12} />
-          </Link>
-        </div>
-
-        {loading ? (
-          <div className="empty-state">
-            <Clock size={24} style={{ margin: "0 auto 0.5rem", opacity: 0.4 }} />
-            <p>Loading pipeline…</p>
-          </div>
-        ) : audits.length === 0 ? (
-          <div className="empty-state">
-            <FileSearch size={28} style={{ margin: "0 auto 0.5rem", opacity: 0.3 }} />
-            <p>No audits yet. <Link to="/audit" style={{ color: "#1D4ED8" }}>Run your first audit →</Link></p>
-          </div>
-        ) : (
-          <div style={{ overflowX: "auto" }}>
-            <table className="data-table">
-              <thead>
-                <tr>
-                  <th>Project</th>
-                  <th className="text-right">Value (ETB)</th>
-                  <th className="text-right">Margin</th>
-                  <th className="text-right">Risk</th>
-                  <th>Recommendation</th>
-                  <th className="text-right">Date</th>
-                </tr>
-              </thead>
-              <tbody>
-                {audits.slice(0, 8).map((a) => (
-                  <tr key={a.id}>
-                    <td style={{ fontWeight: 500 }}>{a.project_name}</td>
-                    <td className="text-right muted">{formatEtb(Number(a.contract_value))}</td>
-                    <td className="text-right">{a.target_margin}%</td>
-                    <td className={`text-right ${riskClass(a.risk_score)}`} style={{ fontWeight: 600 }}>
-                      {a.risk_score != null ? `${Math.round(Number(a.risk_score))}` : "—"}
-                    </td>
-                    <td>{recBadge(a.analysis?.recommendation)}</td>
-                    <td className="text-right muted">{new Date(a.created_at).toLocaleDateString("en-GB", { day: "2-digit", month: "short", year: "numeric" })}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        )}
-      </div>
-
-      {/* Benchmarking scatter chart */}
-      <div className="panel" style={{ padding: "1.25rem" }}>
-        <div style={{ marginBottom: "1rem" }}>
-          <div style={{ fontWeight: 600, fontSize: "0.875rem", color: "#0D1117" }}>Historical Margin vs Risk</div>
-          <div style={{ fontSize: "0.75rem", color: "#6B7280", marginTop: "0.2rem" }}>20 past bids benchmarked against your current portfolio average</div>
-        </div>
-
-        {scoredAudits.length < 2 ? (
-          <div style={{ padding: "2rem", textAlign: "center", color: "#9CA3AF", fontSize: "0.8125rem", background: "#FAFBFC", borderRadius: "4px", border: "1px solid #E4E7EC" }}>
-            Run at least 2 audits to see your portfolio benchmark plotted here.
-          </div>
-        ) : null}
-
-        <ResponsiveContainer width="100%" height={280}>
-          <ScatterChart margin={{ top: 10, right: 24, bottom: 10, left: 0 }}>
-            <CartesianGrid strokeDasharray="3 3" stroke="#F3F4F6" />
-            <XAxis
-              dataKey="risk"
-              type="number"
-              domain={[0, 100]}
-              name="Risk Score"
-              label={{ value: "Risk Score", position: "insideBottom", offset: -4, fontSize: 11, fill: "#9CA3AF" }}
-              tick={{ fontSize: 11, fill: "#9CA3AF" }}
-              axisLine={{ stroke: "#E4E7EC" }}
-              tickLine={false}
-            />
-            <YAxis
-              dataKey="margin"
-              type="number"
-              domain={[0, 32]}
-              name="Target Margin %"
-              label={{ value: "Margin %", angle: -90, position: "insideLeft", offset: 12, fontSize: 11, fill: "#9CA3AF" }}
-              tick={{ fontSize: 11, fill: "#9CA3AF" }}
-              axisLine={{ stroke: "#E4E7EC" }}
-              tickLine={false}
-            />
-            <Tooltip content={<CustomTooltip />} />
-            <Legend
-              wrapperStyle={{ fontSize: "0.75rem", color: "#6B7280", paddingTop: "0.75rem" }}
-              formatter={(value) => <span style={{ color: "#374151" }}>{value}</span>}
-            />
-            <Scatter name="Won" data={wonBids} fill="#15803D" fillOpacity={0.65} r={5} />
-            <Scatter name="Lost" data={lostBids} fill="#B91C1C" fillOpacity={0.65} r={5} />
-            {avgRisk !== null && avgMargin !== null && (
-              <ReferenceDot
-                x={avgRisk}
-                y={avgMargin}
-                r={9}
-                fill="#0F2240"
-                stroke="#FFFFFF"
-                strokeWidth={2}
-                label={{
-                  value: "Portfolio Avg",
-                  position: "top",
-                  fontSize: 10,
-                  fill: "#0F2240",
-                  fontWeight: 600,
-                }}
-              />
-            )}
-          </ScatterChart>
-        </ResponsiveContainer>
-      </div>
     </div>
   );
 }
@@ -2312,170 +1540,18 @@ function AuthPage() {
 }
 </file>
 
-<file path="src/routeTree.gen.ts">
-/* eslint-disable */
+<file path="src/routes/index.tsx">
+import { createFileRoute, redirect } from "@tanstack/react-router";
 
-// @ts-nocheck
-
-// noinspection JSUnusedGlobalSymbols
-
-// This file was automatically generated by TanStack Router.
-// You should NOT make any changes in this file as it will be overwritten.
-// Additionally, you should also exclude this file from your linter and/or formatter to prevent it from being checked or modified.
-
-import { Route as rootRouteImport } from "./routes/__root";
-import { Route as AuthRouteImport } from "./routes/auth";
-import { Route as AuthenticatedRouteImport } from "./routes/_authenticated";
-import { Route as AuthenticatedIndexRouteImport } from "./routes/_authenticated/index";
-import { Route as AuthenticatedTenderFeedRouteImport } from "./routes/_authenticated/tender-feed";
-import { Route as AuthenticatedHistoryRouteImport } from "./routes/_authenticated/history";
-import { Route as AuthenticatedAuditRouteImport } from "./routes/_authenticated/audit";
-
-const AuthRoute = AuthRouteImport.update({
-  id: "/auth",
-  path: "/auth",
-  getParentRoute: () => rootRouteImport,
-} as any);
-const AuthenticatedRoute = AuthenticatedRouteImport.update({
-  id: "/_authenticated",
-  getParentRoute: () => rootRouteImport,
-} as any);
-const AuthenticatedIndexRoute = AuthenticatedIndexRouteImport.update({
-  id: "/",
-  path: "/",
-  getParentRoute: () => AuthenticatedRoute,
-} as any);
-const AuthenticatedTenderFeedRoute = AuthenticatedTenderFeedRouteImport.update({
-  id: "/tender-feed",
-  path: "/tender-feed",
-  getParentRoute: () => AuthenticatedRoute,
-} as any);
-const AuthenticatedHistoryRoute = AuthenticatedHistoryRouteImport.update({
-  id: "/history",
-  path: "/history",
-  getParentRoute: () => AuthenticatedRoute,
-} as any);
-const AuthenticatedAuditRoute = AuthenticatedAuditRouteImport.update({
-  id: "/audit",
-  path: "/audit",
-  getParentRoute: () => AuthenticatedRoute,
-} as any);
-
-export interface FileRoutesByFullPath {
-  "/": typeof AuthenticatedIndexRoute;
-  "/auth": typeof AuthRoute;
-  "/audit": typeof AuthenticatedAuditRoute;
-  "/history": typeof AuthenticatedHistoryRoute;
-  "/tender-feed": typeof AuthenticatedTenderFeedRoute;
-}
-export interface FileRoutesByTo {
-  "/auth": typeof AuthRoute;
-  "/audit": typeof AuthenticatedAuditRoute;
-  "/history": typeof AuthenticatedHistoryRoute;
-  "/tender-feed": typeof AuthenticatedTenderFeedRoute;
-  "/": typeof AuthenticatedIndexRoute;
-}
-export interface FileRoutesById {
-  __root__: typeof rootRouteImport;
-  "/_authenticated": typeof AuthenticatedRouteWithChildren;
-  "/auth": typeof AuthRoute;
-  "/_authenticated/audit": typeof AuthenticatedAuditRoute;
-  "/_authenticated/history": typeof AuthenticatedHistoryRoute;
-  "/_authenticated/tender-feed": typeof AuthenticatedTenderFeedRoute;
-  "/_authenticated/": typeof AuthenticatedIndexRoute;
-}
-export interface FileRouteTypes {
-  fileRoutesByFullPath: FileRoutesByFullPath;
-  fullPaths: "/" | "/auth" | "/audit" | "/history" | "/tender-feed";
-  fileRoutesByTo: FileRoutesByTo;
-  to: "/auth" | "/audit" | "/history" | "/tender-feed" | "/";
-  id:
-    | "__root__"
-    | "/_authenticated"
-    | "/auth"
-    | "/_authenticated/audit"
-    | "/_authenticated/history"
-    | "/_authenticated/tender-feed"
-    | "/_authenticated/";
-  fileRoutesById: FileRoutesById;
-}
-export interface RootRouteChildren {
-  AuthenticatedRoute: typeof AuthenticatedRouteWithChildren;
-  AuthRoute: typeof AuthRoute;
-}
-
-declare module "@tanstack/react-router" {
-  interface FileRoutesByPath {
-    "/auth": {
-      id: "/auth";
-      path: "/auth";
-      fullPath: "/auth";
-      preLoaderRoute: typeof AuthRouteImport;
-      parentRoute: typeof rootRouteImport;
-    };
-    "/_authenticated": {
-      id: "/_authenticated";
-      path: "";
-      fullPath: "/";
-      preLoaderRoute: typeof AuthenticatedRouteImport;
-      parentRoute: typeof rootRouteImport;
-    };
-    "/_authenticated/": {
-      id: "/_authenticated/";
-      path: "/";
-      fullPath: "/";
-      preLoaderRoute: typeof AuthenticatedIndexRouteImport;
-      parentRoute: typeof AuthenticatedRoute;
-    };
-    "/_authenticated/tender-feed": {
-      id: "/_authenticated/tender-feed";
-      path: "/tender-feed";
-      fullPath: "/tender-feed";
-      preLoaderRoute: typeof AuthenticatedTenderFeedRouteImport;
-      parentRoute: typeof AuthenticatedRoute;
-    };
-    "/_authenticated/history": {
-      id: "/_authenticated/history";
-      path: "/history";
-      fullPath: "/history";
-      preLoaderRoute: typeof AuthenticatedHistoryRouteImport;
-      parentRoute: typeof AuthenticatedRoute;
-    };
-    "/_authenticated/audit": {
-      id: "/_authenticated/audit";
-      path: "/audit";
-      fullPath: "/audit";
-      preLoaderRoute: typeof AuthenticatedAuditRouteImport;
-      parentRoute: typeof AuthenticatedRoute;
-    };
-  }
-}
-
-interface AuthenticatedRouteChildren {
-  AuthenticatedAuditRoute: typeof AuthenticatedAuditRoute;
-  AuthenticatedHistoryRoute: typeof AuthenticatedHistoryRoute;
-  AuthenticatedTenderFeedRoute: typeof AuthenticatedTenderFeedRoute;
-  AuthenticatedIndexRoute: typeof AuthenticatedIndexRoute;
-}
-
-const AuthenticatedRouteChildren: AuthenticatedRouteChildren = {
-  AuthenticatedAuditRoute: AuthenticatedAuditRoute,
-  AuthenticatedHistoryRoute: AuthenticatedHistoryRoute,
-  AuthenticatedTenderFeedRoute: AuthenticatedTenderFeedRoute,
-  AuthenticatedIndexRoute: AuthenticatedIndexRoute,
-};
-
-const AuthenticatedRouteWithChildren = AuthenticatedRoute._addFileChildren(
-  AuthenticatedRouteChildren,
-);
-
-const rootRouteChildren: RootRouteChildren = {
-  AuthenticatedRoute: AuthenticatedRouteWithChildren,
-  AuthRoute: AuthRoute,
-};
-export const routeTree = rootRouteImport
-  ._addFileChildren(rootRouteChildren)
-  ._addFileTypes<FileRouteTypes>();
+export const Route = createFileRoute("/")({
+  beforeLoad: () => {
+    // Automatically forwards authenticated traffic straight to the dashboard view
+    throw redirect({
+      to: "/dashboard",
+    });
+  },
+  component: () => null,
+});
 </file>
 
 <file path="src/styles.css">
@@ -2875,8 +1951,12 @@ export const routeTree = rootRouteImport
 4. Set `VITE_SUPABASE_ANON_KEY` to your anon or publishable browser key.
 5. In Supabase SQL Editor, run `supabase/migrations/001_initial_security.sql`.
 6. In Authentication > URL Configuration, add your local site URL:
-   `http://127.0.0.1:5173`
-7. For production, add your real domain to Site URL and Redirect URLs.
+   `http://localhost:5173`
+   (you can also add `http://127.0.0.1:5173` if you prefer).
+7. Add redirect URLs:
+   - `http://localhost:5173`
+   - `http://localhost:5173/auth`
+8. For production, add your real domain to Site URL and Redirect URLs.
 
 The frontend key is allowed to be public. The database is protected by Row Level Security, so users can only read, insert, update, and delete their own audit rows.
 </file>
@@ -3031,6 +2111,17 @@ create trigger on_auth_user_created
 }
 </file>
 
+<file path="vercel.json">
+{
+  "rewrites": [
+    {
+      "source": "/(.*)",
+      "destination": "/index.html"
+    }
+  ]
+}
+</file>
+
 <file path="vite.config.ts">
 import path from "node:path";
 import tailwindcss from "@tailwindcss/vite";
@@ -3068,6 +2159,743 @@ export default defineConfig({
     },
   },
 });
+</file>
+
+<file path="src/integrations/supabase/audits.ts">
+import { useCallback, useEffect, useState } from "react";
+import { supabase } from "./client";
+
+export type AuditRow = {
+  id: string;
+  user_id: string;
+  project_name: string;
+  file_name: string | null;
+  contract_value: number;
+  target_margin: number;
+  risk_score: number | null;
+  status: string;
+  analysis: any;
+  created_at: string;
+};
+
+export async function fetchAudits(): Promise<AuditRow[]> {
+  const { data: { user } } = await supabase.auth.getUser();
+  if (!user) return [];
+
+  const { data, error } = await supabase
+    .from("audits")
+    .select("*")
+    .eq("user_id", user.id)
+    .order("created_at", { ascending: false });
+
+  if (error) throw error;
+  return (data as AuditRow[]) || [];
+}
+
+export async function insertAudit(audit: Omit<AuditRow, "id" | "created_at">) {
+  const { data, error } = await supabase
+    .from("audits")
+    .insert([audit])
+    .select()
+    .single();
+    
+  if (error) throw error;
+  return data as AuditRow;
+}
+
+export async function deleteAudit(id: string) {
+  const { error } = await supabase
+    .from("audits")
+    .delete()
+    .eq("id", id);
+    
+  if (error) throw error;
+  return true;
+}
+
+export function useAudits() {
+  const [audits, setAudits] = useState<AuditRow[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+
+  const load = useCallback(async () => {
+    try {
+      const data = await fetchAudits();
+      setAudits(data);
+      setError(null);
+    } catch (err: any) {
+      setError(err.message);
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    load();
+
+    // Enable auto-refresh on any DB change
+    const channel = supabase
+      .channel('db-changes')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'audits' }, () => {
+        load();
+      })
+      .subscribe();
+
+    return () => {
+      supabase.removeChannel(channel);
+    };
+  }, [load]);
+
+  return { audits, loading, error, reload: load };
+}
+
+export function dispatchAuditsUpdated() {
+  window.dispatchEvent(new Event("valtor:audits-updated"));
+}
+</file>
+
+<file path="src/routes/_authenticated/audit.tsx">
+import { createFileRoute, useSearch, useRouter } from "@tanstack/react-router";
+import { useCallback, useEffect, useState } from "react";
+import { supabase } from "@/integrations/supabase/client";
+import { insertAudit, dispatchAuditsUpdated } from "@/integrations/supabase/audits";
+import {
+  Upload,
+  FileText,
+  Archive,
+  Sheet,
+  FileType,
+  File,
+  Loader2,
+  AlertTriangle,
+  CheckCircle2,
+  XCircle,
+  X,
+  Sparkles,
+  Download,
+} from "lucide-react";
+import * as XLSX from "xlsx";
+
+export const Route = createFileRoute("/_authenticated/audit")({
+  head: () => ({ meta: [{ title: "Bid Audit — Valtor" }] }),
+  component: AuditPage,
+});
+
+type Analysis = {
+  executive_summary?: string;
+  risk_score?: number;
+  recommendation?: string;
+  financial_assessment?: {
+    estimated_cost_etb?: number;
+    projected_margin_pct?: number;
+    margin_gap_pct?: number;
+    cashflow_risk?: string;
+  };
+  risk_matrix?: Array<{ category: string; severity: string; likelihood: number; impact: string }>;
+  evaluation_matrix?: Array<{ criterion: string; score: number; weight: number; notes: string }>;
+  key_risks?: string[];
+  opportunities?: string[];
+  compliance_flags?: string[];
+};
+
+function fileIcon(name: string) {
+  const ext = name.split(".").pop()?.toLowerCase();
+  const cls = { width: 16, height: 16 };
+  if (ext === "pdf") return <FileText {...cls} color="#B91C1C" />;
+  if (ext === "zip") return <Archive {...cls} color="#B45309" />;
+  if (ext === "xlsx" || ext === "xls") return <Sheet {...cls} color="#15803D" />;
+  if (ext === "docx" || ext === "doc") return <FileType {...cls} color="#1D4ED8" />;
+  return <File {...cls} color="#6B7280" />;
+}
+
+function fmtSize(bytes: number) {
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(0)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+function truncName(name: string, max = 40) {
+  return name.length > max ? name.slice(0, max - 1) + "…" : name;
+}
+
+function fileToBase64(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const r = new FileReader();
+    r.onload = () => resolve((r.result as string).split(",")[1] ?? "");
+    r.onerror = reject;
+    r.readAsDataURL(file);
+  });
+}
+
+function exportToExcel(analysis: Analysis, projectName: string) {
+  const wb = XLSX.utils.book_new();
+
+  if (Array.isArray(analysis.evaluation_matrix) && analysis.evaluation_matrix.length > 0) {
+    const evalData = [
+      ["Criterion", "Score (0–10)", "Weight (%)", "Weighted Score", "Notes"],
+      ...analysis.evaluation_matrix.map((r) => [
+        r.criterion,
+        r.score,
+        `${(r.weight * 100).toFixed(0)}%`,
+        (r.score * r.weight).toFixed(2),
+        r.notes,
+      ]),
+    ];
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(evalData), "Evaluation Matrix");
+  }
+
+  if (Array.isArray(analysis.risk_matrix) && analysis.risk_matrix.length > 0) {
+    const riskData = [
+      ["Category", "Severity", "Likelihood (%)", "Impact"],
+      ...analysis.risk_matrix.map((r) => [r.category, r.severity, r.likelihood, r.impact]),
+    ];
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(riskData), "Risk Matrix");
+  }
+
+  const boqData = [
+    ["#", "Item", "Description", "Unit", "Qty", "Unit Rate (ETB)", "Total (ETB)"],
+    [1, "Mobilisation", "Site mobilisation & preliminary works", "LS", 1, 2_500_000, 2_500_000],
+    [2, "Earthworks", "Bulk excavation & fill", "m³", 8_400, 850, 7_140_000],
+    [3, "Concrete Works", "Foundation concrete C25/30", "m³", 1_200, 12_500, 15_000_000],
+    [4, "Reinforcement", "Grade 60 rebar supply & fix", "ton", 180, 85_000, 15_300_000],
+    [5, "Masonry", "Block wall construction", "m²", 3_600, 4_200, 15_120_000],
+    [6, "Roofing", "IBR sheet roofing system", "m²", 2_100, 6_800, 14_280_000],
+    [7, "MEP", "Mechanical, electrical & plumbing", "LS", 1, 18_000_000, 18_000_000],
+    [8, "Finishes", "Internal & external finishes", "m²", 5_400, 3_500, 18_900_000],
+    ["", "", "", "", "", "TOTAL", { f: "SUM(G2:G9)" }],
+  ];
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(boqData), "BoQ Skeleton");
+
+  const date = new Date().toISOString().slice(0, 10);
+  const safeName = projectName.replace(/[^a-zA-Z0-9]/g, "_").slice(0, 30);
+  XLSX.writeFile(wb, `Valtor_BoQ_${safeName}_${date}.xlsx`);
+}
+
+function severityBadge(s: string) {
+  const k = s?.toUpperCase();
+  if (k === "CRITICAL") return <span className="badge badge-red">Critical</span>;
+  if (k === "HIGH") return <span className="badge badge-red" style={{ background: "#FEF2F2", color: "#B91C1C" }}>High</span>;
+  if (k === "MEDIUM") return <span className="badge badge-amber">Medium</span>;
+  return <span className="badge badge-green">Low</span>;
+}
+
+function recBadge(r?: string) {
+  if (r === "PROCEED") return <span className="badge badge-green" style={{ fontSize: "0.75rem", padding: "0.3rem 0.75rem" }}>✓ Proceed</span>;
+  if (r === "DECLINE") return <span className="badge badge-red" style={{ fontSize: "0.75rem", padding: "0.3rem 0.75rem" }}>✗ Decline</span>;
+  return <span className="badge badge-amber" style={{ fontSize: "0.75rem", padding: "0.3rem 0.75rem" }}>⚠ Proceed with Caution</span>;
+}
+
+function AuditPage() {
+  const router = useRouter();
+  const search = useSearch({ from: "/_authenticated/audit" });
+  const prefilledProject = (search as any)?.project ?? "";
+
+  const [files, setFiles] = useState<File[]>([]);
+  const [projectName, setProjectName] = useState(prefilledProject);
+  const [contractValue, setContractValue] = useState("");
+  const [targetMargin, setTargetMargin] = useState("15");
+  const [loading, setLoading] = useState(false);
+  const [analysis, setAnalysis] = useState<Analysis | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [dragOver, setDragOver] = useState(false);
+
+  useEffect(() => {
+    if (prefilledProject) setProjectName(prefilledProject);
+  }, [prefilledProject]);
+
+  const addFiles = useCallback((incoming: FileList | null) => {
+    if (!incoming) return;
+    setFiles((prev) => {
+      const existing = new Set(prev.map((f) => f.name));
+      const novel = Array.from(incoming).filter((f) => !existing.has(f.name));
+      return [...prev, ...novel];
+    });
+  }, []);
+
+  const onDrop = useCallback(
+    (e: React.DragEvent) => {
+      e.preventDefault();
+      setDragOver(false);
+      addFiles(e.dataTransfer.files);
+    },
+    [addFiles],
+  );
+
+  const removeFile = (index: number) => {
+    setFiles((prev) => prev.filter((_, i) => i !== index));
+  };
+
+  const runAudit = async () => {
+    setError(null);
+    setAnalysis(null);
+    if (!projectName.trim()) return setError("Project name is required.");
+    if (!contractValue) return setError("Contract value is required.");
+    
+    const apiKey = import.meta.env.VITE_GEMINI_API_KEY as string | undefined;
+    if (!apiKey) return setError("VITE_GEMINI_API_KEY is not configured.");
+    
+    setLoading(true);
+
+    try {
+      const firstPdf = files.find((f) => f.name.toLowerCase().endsWith(".pdf"));
+      const fileBase64 = firstPdf ? await fileToBase64(firstPdf) : undefined;
+      const fileNames = files.length > 0 ? files.map((f) => f.name).join(", ") : "n/a";
+
+      const systemPrompt = `You are Valtor AI, an executive construction tender risk analyst. Return ONLY a strict JSON object.
+Required shape:
+{
+  "executive_summary": string,
+  "risk_score": number,
+  "recommendation": "PROCEED" | "PROCEED_WITH_CAUTION" | "DECLINE",
+  "financial_assessment": {
+    "estimated_cost_etb": number,
+    "projected_margin_pct": number,
+    "margin_gap_pct": number,
+    "cashflow_risk": "LOW" | "MEDIUM" | "HIGH"
+  },
+  "risk_matrix": [
+    { "category": string, "severity": "LOW"|"MEDIUM"|"HIGH"|"CRITICAL", "likelihood": number, "impact": string }
+  ],
+  "evaluation_matrix": [
+    { "criterion": string, "score": number, "weight": number, "notes": string }
+  ],
+  "key_risks": string[],
+  "opportunities": string[],
+  "compliance_flags": string[]
+}`;
+
+      const userText = `Project: ${projectName}
+Files: ${fileNames}
+Value: ${contractValue} ETB
+Target Margin: ${targetMargin}%`;
+
+      const parts: any[] = [{ text: userText }];
+      if (fileBase64 && firstPdf) {
+        parts.push({ inline_data: { mime_type: "application/pdf", data: fileBase64 } });
+      }
+
+      // Fix: Correct model version
+      const res = await fetch(
+        `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${apiKey}`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            system_instruction: { parts: [{ text: systemPrompt }] },
+            contents: [{ role: "user", parts }],
+            generationConfig: { response_mime_type: "application/json", temperature: 0.15 },
+          }),
+        },
+      );
+
+      if (!res.ok) {
+        const txt = await res.text();
+        throw new Error(`API error (${res.status}): ${txt.slice(0, 200)}`);
+      }
+
+      const data = await res.json();
+      let text = data?.candidates?.[0]?.content?.parts?.[0]?.text ?? "{}";
+      text = text.replace(/```json/gi, "").replace(/```/g, "").trim();
+
+      const a = JSON.parse(text) as Analysis;
+      setAnalysis(a);
+
+      const { data: userData, error: userError } = await supabase.auth.getUser();
+      if (userError || !userData.user) throw new Error("Authenticated user not found.");
+
+      await insertAudit({
+        user_id: userData.user.id,
+        project_name: projectName,
+        file_name: files[0]?.name ?? null,
+        contract_value: Number(contractValue),
+        target_margin: Number(targetMargin),
+        risk_score: a.risk_score ?? null,
+        status: "completed",
+        analysis: a,
+        created_at: new Date().toISOString(),
+      });
+
+      // Fix: Dispatch event to notify Dashboard/History
+      dispatchAuditsUpdated();
+      
+    } catch (e) {
+      console.error(e);
+      setError(e instanceof Error ? e.message : "An error occurred during analysis.");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  return (
+    <div>
+      <div className="page-header">
+        <div className="page-title">Bid Audit</div>
+        <div className="page-subtitle">Upload tender documents and generate AI risk evaluation.</div>
+      </div>
+
+      <div style={{ display: "grid", gridTemplateColumns: "340px 1fr", gap: "1.5rem", alignItems: "start" }}>
+        <div className="panel" style={{ padding: "1.25rem" }}>
+          <div style={{ display: "flex", flexDirection: "column", gap: "1rem" }}>
+            <div>
+              <label className="section-label">Project name</label>
+              <input
+                value={projectName}
+                onChange={(e) => setProjectName(e.target.value)}
+                className="field-input"
+                placeholder="Project Name"
+              />
+            </div>
+
+            <div>
+              <label className="section-label">Documents</label>
+              <div
+                className={`dropzone${dragOver ? " active" : ""}`}
+                onDragOver={(e) => { e.preventDefault(); setDragOver(true); }}
+                onDragLeave={() => setDragOver(false)}
+                onDrop={onDrop}
+              >
+                <input
+                  id="file-input"
+                  type="file"
+                  accept=".pdf,.zip,.xlsx,.xls,.docx,.doc"
+                  multiple
+                  className="hidden"
+                  onChange={(e) => addFiles(e.target.files)}
+                />
+                <label htmlFor="file-input" style={{ cursor: "pointer", display: "block" }}>
+                  <Upload size={20} color="#9CA3AF" style={{ margin: "0 auto 0.5rem" }} />
+                  <div style={{ fontSize: "0.8125rem", fontWeight: 500, color: "#374151" }}>
+                    Drop files or click to browse
+                  </div>
+                </label>
+              </div>
+
+              {files.length > 0 && (
+                <div className="panel" style={{ marginTop: "0.625rem", overflow: "hidden" }}>
+                  {files.map((f, i) => (
+                    <div className="file-row" key={i}>
+                      <div style={{ flexShrink: 0 }}>{fileIcon(f.name)}</div>
+                      <div style={{ flex: 1, minWidth: 0 }}>
+                        <div style={{ fontSize: "0.75rem", fontWeight: 500, color: "#0D1117", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                          {truncName(f.name)}
+                        </div>
+                        <div style={{ fontSize: "0.625rem", color: "#9CA3AF" }}>{fmtSize(f.size)}</div>
+                      </div>
+                      <button onClick={() => removeFile(i)} className="btn-ghost" style={{ padding: "0.25rem" }}>
+                        <X size={13} />
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+
+            <div>
+              <label className="section-label">Contract value (ETB)</label>
+              <input
+                type="number"
+                value={contractValue}
+                onChange={(e) => setContractValue(e.target.value)}
+                className="field-input"
+              />
+            </div>
+
+            <div>
+              <label className="section-label">Target margin (%)</label>
+              <input
+                type="number"
+                value={targetMargin}
+                onChange={(e) => setTargetMargin(e.target.value)}
+                className="field-input"
+              />
+            </div>
+
+            {error && (
+              <div style={{ background: "#FEF2F2", border: "1px solid #FECACA", borderRadius: "4px", padding: "0.625rem 0.875rem", fontSize: "0.8125rem", color: "#B91C1C" }}>
+                {error}
+              </div>
+            )}
+
+            <button onClick={runAudit} disabled={loading} className="btn-primary" style={{ width: "100%", justifyContent: "center" }}>
+              {loading ? (
+                <><Loader2 size={14} className="animate-spin" /> Analysing…</>
+              ) : (
+                <><Sparkles size={14} /> Run Audit</>
+              )}
+            </button>
+          </div>
+        </div>
+
+        <div style={{ minHeight: "60vh" }}>
+          {!analysis && !loading && (
+            <div className="panel" style={{ padding: "4rem 2rem", textAlign: "center", color: "#9CA3AF" }}>
+              <Sparkles size={32} style={{ margin: "0 auto 1rem", opacity: 0.3 }} />
+              <div style={{ fontWeight: 600, color: "#374151" }}>Ready for analysis</div>
+              <div style={{ fontSize: "0.8125rem" }}>Configure a project and click Run Audit.</div>
+            </div>
+          )}
+
+          {loading && (
+            <div className="panel" style={{ padding: "4rem 2rem", textAlign: "center" }}>
+              <Loader2 size={28} className="animate-spin" color="#0F2240" style={{ margin: "0 auto 1rem" }} />
+              <div style={{ fontWeight: 600, color: "#0D1117" }}>Running AI analysis…</div>
+            </div>
+          )}
+
+          {analysis && (
+            <Results
+              analysis={analysis}
+              projectName={projectName}
+              onExport={() => exportToExcel(analysis, projectName)}
+            />
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function Results({ analysis, projectName, onExport }: { analysis: Analysis; projectName: string; onExport: () => void }) {
+  const r = Number(analysis.risk_score) || 0;
+  const riskClass = r < 35 ? "risk-low" : r < 65 ? "risk-medium" : "risk-high";
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: "1rem" }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+        <div style={{ fontSize: "0.8125rem", color: "#6B7280" }}>
+          Analysis for <strong style={{ color: "#0D1117" }}>{projectName}</strong>
+        </div>
+        <button onClick={onExport} className="btn-secondary">
+          <Download size={13} />
+          Export Analysis
+        </button>
+      </div>
+
+      <div style={{ display: "grid", gridTemplateColumns: "1fr auto", gap: "1rem" }}>
+        <div className="panel" style={{ padding: "1.25rem" }}>
+          <div className="section-label">Executive Summary</div>
+          <p style={{ fontSize: "0.8125rem", lineHeight: 1.6, color: "#374151" }}>{analysis.executive_summary}</p>
+        </div>
+        <div className="panel" style={{ padding: "1.25rem", textAlign: "center", minWidth: "140px" }}>
+          <div className="section-label">Risk Score</div>
+          <div className={riskClass} style={{ fontSize: "3rem", fontWeight: 800 }}>{Math.round(r)}</div>
+          {analysis.recommendation && recBadge(analysis.recommendation)}
+        </div>
+      </div>
+
+      {Array.isArray(analysis.risk_matrix) && (
+        <div className="panel" style={{ overflow: "hidden" }}>
+          <div style={{ padding: "1rem 1.25rem", borderBottom: "1px solid #E4E7EC", fontWeight: 600 }}>Risk Matrix</div>
+          <table className="data-table">
+            <thead>
+              <tr><th>Severity</th><th>Category</th><th>Impact</th><th className="text-right">Likelihood</th></tr>
+            </thead>
+            <tbody>
+              {analysis.risk_matrix.map((row, i) => (
+                <tr key={i}>
+                  <td>{severityBadge(row.severity)}</td>
+                  <td>{row.category}</td>
+                  <td className="muted">{row.impact}</td>
+                  <td className="text-right">{row.likelihood}%</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </div>
+  );
+}
+</file>
+
+<file path="src/routeTree.gen.ts">
+/* eslint-disable */
+
+// @ts-nocheck
+
+// noinspection JSUnusedGlobalSymbols
+
+// This file was automatically generated by TanStack Router.
+// You should NOT make any changes in this file as it will be overwritten.
+// Additionally, you should also exclude this file from your linter and/or formatter to prevent it from being checked or modified.
+
+import { Route as rootRouteImport } from "./routes/__root";
+import { Route as AuthRouteImport } from "./routes/auth";
+import { Route as AuthenticatedRouteImport } from "./routes/_authenticated";
+import { Route as IndexRouteImport } from "./routes/index";
+import { Route as AuthenticatedTenderFeedRouteImport } from "./routes/_authenticated/tender-feed";
+import { Route as AuthenticatedHistoryRouteImport } from "./routes/_authenticated/history";
+import { Route as AuthenticatedDashboardRouteImport } from "./routes/_authenticated/dashboard";
+import { Route as AuthenticatedAuditRouteImport } from "./routes/_authenticated/audit";
+
+const AuthRoute = AuthRouteImport.update({
+  id: "/auth",
+  path: "/auth",
+  getParentRoute: () => rootRouteImport,
+} as any);
+const AuthenticatedRoute = AuthenticatedRouteImport.update({
+  id: "/_authenticated",
+  getParentRoute: () => rootRouteImport,
+} as any);
+const IndexRoute = IndexRouteImport.update({
+  id: "/",
+  path: "/",
+  getParentRoute: () => rootRouteImport,
+} as any);
+const AuthenticatedTenderFeedRoute = AuthenticatedTenderFeedRouteImport.update({
+  id: "/tender-feed",
+  path: "/tender-feed",
+  getParentRoute: () => AuthenticatedRoute,
+} as any);
+const AuthenticatedHistoryRoute = AuthenticatedHistoryRouteImport.update({
+  id: "/history",
+  path: "/history",
+  getParentRoute: () => AuthenticatedRoute,
+} as any);
+const AuthenticatedDashboardRoute = AuthenticatedDashboardRouteImport.update({
+  id: "/dashboard",
+  path: "/dashboard",
+  getParentRoute: () => AuthenticatedRoute,
+} as any);
+const AuthenticatedAuditRoute = AuthenticatedAuditRouteImport.update({
+  id: "/audit",
+  path: "/audit",
+  getParentRoute: () => AuthenticatedRoute,
+} as any);
+
+export interface FileRoutesByFullPath {
+  "/": typeof IndexRoute;
+  "/auth": typeof AuthRoute;
+  "/audit": typeof AuthenticatedAuditRoute;
+  "/dashboard": typeof AuthenticatedDashboardRoute;
+  "/history": typeof AuthenticatedHistoryRoute;
+  "/tender-feed": typeof AuthenticatedTenderFeedRoute;
+}
+export interface FileRoutesByTo {
+  "/": typeof IndexRoute;
+  "/auth": typeof AuthRoute;
+  "/audit": typeof AuthenticatedAuditRoute;
+  "/dashboard": typeof AuthenticatedDashboardRoute;
+  "/history": typeof AuthenticatedHistoryRoute;
+  "/tender-feed": typeof AuthenticatedTenderFeedRoute;
+}
+export interface FileRoutesById {
+  __root__: typeof rootRouteImport;
+  "/": typeof IndexRoute;
+  "/_authenticated": typeof AuthenticatedRouteWithChildren;
+  "/auth": typeof AuthRoute;
+  "/_authenticated/audit": typeof AuthenticatedAuditRoute;
+  "/_authenticated/dashboard": typeof AuthenticatedDashboardRoute;
+  "/_authenticated/history": typeof AuthenticatedHistoryRoute;
+  "/_authenticated/tender-feed": typeof AuthenticatedTenderFeedRoute;
+}
+export interface FileRouteTypes {
+  fileRoutesByFullPath: FileRoutesByFullPath;
+  fullPaths:
+    | "/"
+    | "/auth"
+    | "/audit"
+    | "/dashboard"
+    | "/history"
+    | "/tender-feed";
+  fileRoutesByTo: FileRoutesByTo;
+  to: "/" | "/auth" | "/audit" | "/dashboard" | "/history" | "/tender-feed";
+  id:
+    | "__root__"
+    | "/"
+    | "/_authenticated"
+    | "/auth"
+    | "/_authenticated/audit"
+    | "/_authenticated/dashboard"
+    | "/_authenticated/history"
+    | "/_authenticated/tender-feed";
+  fileRoutesById: FileRoutesById;
+}
+export interface RootRouteChildren {
+  IndexRoute: typeof IndexRoute;
+  AuthenticatedRoute: typeof AuthenticatedRouteWithChildren;
+  AuthRoute: typeof AuthRoute;
+}
+
+declare module "@tanstack/react-router" {
+  interface FileRoutesByPath {
+    "/auth": {
+      id: "/auth";
+      path: "/auth";
+      fullPath: "/auth";
+      preLoaderRoute: typeof AuthRouteImport;
+      parentRoute: typeof rootRouteImport;
+    };
+    "/_authenticated": {
+      id: "/_authenticated";
+      path: "";
+      fullPath: "/";
+      preLoaderRoute: typeof AuthenticatedRouteImport;
+      parentRoute: typeof rootRouteImport;
+    };
+    "/": {
+      id: "/";
+      path: "/";
+      fullPath: "/";
+      preLoaderRoute: typeof IndexRouteImport;
+      parentRoute: typeof rootRouteImport;
+    };
+    "/_authenticated/tender-feed": {
+      id: "/_authenticated/tender-feed";
+      path: "/tender-feed";
+      fullPath: "/tender-feed";
+      preLoaderRoute: typeof AuthenticatedTenderFeedRouteImport;
+      parentRoute: typeof AuthenticatedRoute;
+    };
+    "/_authenticated/history": {
+      id: "/_authenticated/history";
+      path: "/history";
+      fullPath: "/history";
+      preLoaderRoute: typeof AuthenticatedHistoryRouteImport;
+      parentRoute: typeof AuthenticatedRoute;
+    };
+    "/_authenticated/dashboard": {
+      id: "/_authenticated/dashboard";
+      path: "/dashboard";
+      fullPath: "/dashboard";
+      preLoaderRoute: typeof AuthenticatedDashboardRouteImport;
+      parentRoute: typeof AuthenticatedRoute;
+    };
+    "/_authenticated/audit": {
+      id: "/_authenticated/audit";
+      path: "/audit";
+      fullPath: "/audit";
+      preLoaderRoute: typeof AuthenticatedAuditRouteImport;
+      parentRoute: typeof AuthenticatedRoute;
+    };
+  }
+}
+
+interface AuthenticatedRouteChildren {
+  AuthenticatedAuditRoute: typeof AuthenticatedAuditRoute;
+  AuthenticatedDashboardRoute: typeof AuthenticatedDashboardRoute;
+  AuthenticatedHistoryRoute: typeof AuthenticatedHistoryRoute;
+  AuthenticatedTenderFeedRoute: typeof AuthenticatedTenderFeedRoute;
+}
+
+const AuthenticatedRouteChildren: AuthenticatedRouteChildren = {
+  AuthenticatedAuditRoute: AuthenticatedAuditRoute,
+  AuthenticatedDashboardRoute: AuthenticatedDashboardRoute,
+  AuthenticatedHistoryRoute: AuthenticatedHistoryRoute,
+  AuthenticatedTenderFeedRoute: AuthenticatedTenderFeedRoute,
+};
+
+const AuthenticatedRouteWithChildren = AuthenticatedRoute._addFileChildren(
+  AuthenticatedRouteChildren,
+);
+
+const rootRouteChildren: RootRouteChildren = {
+  IndexRoute: IndexRoute,
+  AuthenticatedRoute: AuthenticatedRouteWithChildren,
+  AuthRoute: AuthRoute,
+};
+export const routeTree = rootRouteImport
+  ._addFileChildren(rootRouteChildren)
+  ._addFileTypes<FileRouteTypes>();
 </file>
 
 </files>

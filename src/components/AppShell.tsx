@@ -1,21 +1,24 @@
 import { Link, useRouter } from "@tanstack/react-router";
 import {
-  LayoutDashboard,
+  LayoutGrid,
   FileSearch,
   History,
   LogOut,
   Rss,
-  ChevronRight,
-  Shield,
+  Bell,
+  Settings,
 } from "lucide-react";
 import { supabase } from "@/integrations/supabase/client";
 import type { ReactNode } from "react";
 
+// Standard import
+import logo from "../assets/logo.png";
+
 const navItems = [
-  { to: "/", label: "Dashboard", icon: LayoutDashboard },
+  { to: "/dashboard", label: "Dashboard", icon: LayoutGrid },
   { to: "/audit", label: "Bid Audit", icon: FileSearch },
-  { to: "/tender-feed", label: "Tender Feed", icon: Rss },
-  { to: "/history", label: "History", icon: History },
+  { to: "/tender-feed", label: "Live Tenders", icon: Rss },
+  { to: "/history", label: "History Log", icon: History },
 ] as const;
 
 export function AppShell({ children, userEmail }: { children: ReactNode; userEmail?: string | null }) {
@@ -27,134 +30,98 @@ export function AppShell({ children, userEmail }: { children: ReactNode; userEma
   };
 
   return (
-    <div className="min-h-screen flex" style={{ background: "#F7F8FA" }}>
-      {/* Sidebar */}
+    <div className="min-h-screen flex bg-[#fcfcfc]">
+      {/* SIDEBAR - INDUSTRIAL SPEC */}
       <aside
-        className="hidden md:flex flex-col"
-        style={{
-          width: "220px",
-          minHeight: "100vh",
-          background: "#FFFFFF",
-          borderRight: "1px solid #E4E7EC",
-          position: "fixed",
-          top: 0,
-          left: 0,
-          bottom: 0,
-          zIndex: 40,
-        }}
+        className="w-[280px] bg-white border-r border-slate-200 fixed inset-y-0 z-40 hidden md:flex flex-col"
       >
-        {/* Logo */}
-        <div style={{ padding: "1.25rem 1.25rem 1rem", borderBottom: "1px solid #E4E7EC" }}>
-          <Link to="/" style={{ display: "flex", alignItems: "center", gap: "0.625rem", textDecoration: "none" }}>
-            <div
-              style={{
-                width: "32px",
-                height: "32px",
-                background: "#0F2240",
-                borderRadius: "6px",
-                display: "flex",
-                alignItems: "center",
-                justifyContent: "center",
-                flexShrink: 0,
-              }}
-            >
-              <Shield size={16} color="#FFFFFF" />
-            </div>
-            <div>
-              <div style={{ fontSize: "0.9375rem", fontWeight: 700, color: "#0D1117", letterSpacing: "-0.02em", lineHeight: 1.1 }}>
-                Valtor
-              </div>
-              <div style={{ fontSize: "0.625rem", color: "#9CA3AF", letterSpacing: "0.08em", textTransform: "uppercase", marginTop: "1px" }}>
-                Bid Intelligence
-              </div>
-            </div>
+        {/* MASSIVE BRAND AREA */}
+        <div style={{ padding: "3.5rem 2rem" }} className="border-b border-slate-100 bg-[#FCFCFD]">
+          <Link to="/" style={{ display: "block", textDecoration: "none" }}>
+            <img 
+              src={logo} 
+              alt="Valtor" 
+              style={{ 
+                width: "100%", 
+                height: "auto", 
+                maxWidth: "220px", // Scaled to fill sidebar width
+                display: "block",
+                filter: "contrast(1.1) brightness(1.02)", // Match login page clarity
+                margin: "0 auto"
+              }} 
+            />
           </Link>
         </div>
 
-        {/* Nav */}
-        <nav style={{ padding: "0.75rem 0.625rem", flex: 1 }}>
-          <div style={{ fontSize: "0.625rem", fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.07em", color: "#9CA3AF", padding: "0 0.5rem", marginBottom: "0.375rem" }}>
-            Platform
+        {/* NAVIGATION */}
+        <nav className="flex-1 p-6 space-y-2">
+          <div className="text-[10px] font-black text-slate-300 uppercase tracking-[0.25em] mb-6 px-4">
+            System Core
           </div>
           {navItems.map(({ to, label, icon: Icon }) => (
             <Link
               key={to}
               to={to}
-              activeOptions={{ exact: to === "/" }}
-              activeProps={{ className: "nav-link active" }}
-              inactiveProps={{ className: "nav-link" }}
+              activeProps={{ className: "bg-slate-900 text-white shadow-xl translate-x-1" }}
+              inactiveProps={{ className: "text-slate-500 hover:bg-slate-50" }}
+              className="flex items-center gap-4 px-5 py-4 rounded-lg text-[11px] font-black uppercase tracking-[0.15em] no-underline transition-all duration-200"
             >
-              <Icon size={15} />
+              <Icon size={16} />
               {label}
             </Link>
           ))}
         </nav>
 
-        {/* User footer */}
-        <div style={{ padding: "0.875rem 0.625rem", borderTop: "1px solid #E4E7EC" }}>
-          {userEmail && (
-            <div style={{ fontSize: "0.6875rem", color: "#6B7280", padding: "0 0.5rem", marginBottom: "0.5rem", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+        {/* SIDEBAR FOOTER */}
+        <div className="p-8 border-t border-slate-100 bg-slate-50/50">
+          <div className="px-4 mb-6">
+            <p className="text-[9px] font-black text-slate-400 uppercase tracking-widest mb-1">
+              Active Operator
+            </p>
+            <p className="text-[11px] font-bold text-slate-900 truncate">
               {userEmail}
-            </div>
-          )}
-          <button onClick={signOut} className="nav-link" style={{ width: "100%", background: "none", border: "none", cursor: "pointer", justifyContent: "flex-start" }}>
-            <LogOut size={14} />
-            Sign out
+            </p>
+          </div>
+          <button 
+            onClick={signOut} 
+            className="flex items-center gap-3 w-full px-4 py-3 text-[11px] font-black uppercase text-red-500 hover:text-red-700 transition-colors bg-transparent border-none cursor-pointer"
+          >
+            <LogOut size={16} /> Terminate
           </button>
         </div>
       </aside>
 
-      {/* Mobile header */}
-      <header
-        className="md:hidden"
-        style={{
-          position: "fixed",
-          top: 0,
-          left: 0,
-          right: 0,
-          zIndex: 40,
-          background: "#FFFFFF",
-          borderBottom: "1px solid #E4E7EC",
-          padding: "0.75rem 1rem",
-          display: "flex",
-          alignItems: "center",
-          justifyContent: "space-between",
-        }}
-      >
-        <Link to="/" style={{ display: "flex", alignItems: "center", gap: "0.5rem", textDecoration: "none" }}>
-          <div style={{ width: "28px", height: "28px", background: "#0F2240", borderRadius: "5px", display: "flex", alignItems: "center", justifyContent: "center" }}>
-            <Shield size={14} color="#FFFFFF" />
+      {/* MAIN VIEWPORT */}
+      <div className="flex-1 md:ml-[280px] flex flex-col min-h-screen">
+        {/* CLEAN ENGINEERING HEADER */}
+        <header className="h-20 bg-white border-b border-slate-200 flex items-center justify-between px-12 sticky top-0 z-30">
+          <div className="flex items-center gap-2">
+            <div className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></div>
+            <div className="text-[10px] font-black text-slate-400 uppercase tracking-[0.2em]">
+              System Status: <span className="text-emerald-600">Operational</span>
+            </div>
           </div>
-          <span style={{ fontWeight: 700, fontSize: "0.9375rem", color: "#0D1117" }}>Valtor</span>
-        </Link>
-        <nav style={{ display: "flex", gap: "0.25rem" }}>
-          {navItems.map(({ to, icon: Icon }) => (
-            <Link
-              key={to}
-              to={to}
-              activeOptions={{ exact: to === "/" }}
-              activeProps={{ style: { color: "#0F2240", background: "#EEF1F6" } }}
-              inactiveProps={{ style: { color: "#6B7280" } }}
-              style={{ padding: "0.375rem", borderRadius: "4px", display: "flex" }}
-            >
-              <Icon size={16} />
-            </Link>
-          ))}
-        </nav>
-      </header>
+          
+          <div className="flex items-center gap-8">
+            <div className="flex gap-4">
+              <button className="text-slate-300 hover:text-slate-900 transition-colors"><Bell size={18}/></button>
+              <button className="text-slate-300 hover:text-slate-900 transition-colors"><Settings size={18}/></button>
+            </div>
+            <div className="h-10 w-[1px] bg-slate-200"></div>
+            <div className="flex items-center gap-4">
+               <span className="text-[10px] font-black text-slate-400 uppercase tracking-widest hidden lg:block">Command Center</span>
+               <div className="w-10 h-10 bg-slate-900 rounded-full flex items-center justify-center text-[11px] font-black text-white uppercase shadow-lg border-2 border-white">
+                {userEmail?.charAt(0) || 'U'}
+              </div>
+            </div>
+          </div>
+        </header>
 
-      {/* Main content */}
-      <main
-        style={{
-          flex: 1,
-          marginLeft: "220px",
-          padding: "2rem",
-          maxWidth: "1280px",
-        }}
-        className="md:ml-[220px] ml-0 mt-[52px] md:mt-0"
-      >
-        {children}
-      </main>
+        {/* CONTENT */}
+        <main className="p-12 w-full max-w-[1600px] mx-auto">
+          {children}
+        </main>
+      </div>
     </div>
   );
 }
