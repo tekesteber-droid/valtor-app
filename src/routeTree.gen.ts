@@ -11,9 +11,10 @@
 import { Route as rootRouteImport } from "./routes/__root";
 import { Route as AuthRouteImport } from "./routes/auth";
 import { Route as AuthenticatedRouteImport } from "./routes/_authenticated";
-import { Route as AuthenticatedIndexRouteImport } from "./routes/_authenticated/index";
+import { Route as IndexRouteImport } from "./routes/index";
 import { Route as AuthenticatedTenderFeedRouteImport } from "./routes/_authenticated/tender-feed";
 import { Route as AuthenticatedHistoryRouteImport } from "./routes/_authenticated/history";
+import { Route as AuthenticatedDashboardRouteImport } from "./routes/_authenticated/dashboard";
 import { Route as AuthenticatedAuditRouteImport } from "./routes/_authenticated/audit";
 
 const AuthRoute = AuthRouteImport.update({
@@ -25,10 +26,10 @@ const AuthenticatedRoute = AuthenticatedRouteImport.update({
   id: "/_authenticated",
   getParentRoute: () => rootRouteImport,
 } as any);
-const AuthenticatedIndexRoute = AuthenticatedIndexRouteImport.update({
+const IndexRoute = IndexRouteImport.update({
   id: "/",
   path: "/",
-  getParentRoute: () => AuthenticatedRoute,
+  getParentRoute: () => rootRouteImport,
 } as any);
 const AuthenticatedTenderFeedRoute = AuthenticatedTenderFeedRouteImport.update({
   id: "/tender-feed",
@@ -40,6 +41,11 @@ const AuthenticatedHistoryRoute = AuthenticatedHistoryRouteImport.update({
   path: "/history",
   getParentRoute: () => AuthenticatedRoute,
 } as any);
+const AuthenticatedDashboardRoute = AuthenticatedDashboardRouteImport.update({
+  id: "/dashboard",
+  path: "/dashboard",
+  getParentRoute: () => AuthenticatedRoute,
+} as any);
 const AuthenticatedAuditRoute = AuthenticatedAuditRouteImport.update({
   id: "/audit",
   path: "/audit",
@@ -47,44 +53,55 @@ const AuthenticatedAuditRoute = AuthenticatedAuditRouteImport.update({
 } as any);
 
 export interface FileRoutesByFullPath {
-  "/": typeof AuthenticatedIndexRoute;
+  "/": typeof IndexRoute;
   "/auth": typeof AuthRoute;
   "/audit": typeof AuthenticatedAuditRoute;
+  "/dashboard": typeof AuthenticatedDashboardRoute;
   "/history": typeof AuthenticatedHistoryRoute;
   "/tender-feed": typeof AuthenticatedTenderFeedRoute;
 }
 export interface FileRoutesByTo {
+  "/": typeof IndexRoute;
   "/auth": typeof AuthRoute;
   "/audit": typeof AuthenticatedAuditRoute;
+  "/dashboard": typeof AuthenticatedDashboardRoute;
   "/history": typeof AuthenticatedHistoryRoute;
   "/tender-feed": typeof AuthenticatedTenderFeedRoute;
-  "/": typeof AuthenticatedIndexRoute;
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport;
+  "/": typeof IndexRoute;
   "/_authenticated": typeof AuthenticatedRouteWithChildren;
   "/auth": typeof AuthRoute;
   "/_authenticated/audit": typeof AuthenticatedAuditRoute;
+  "/_authenticated/dashboard": typeof AuthenticatedDashboardRoute;
   "/_authenticated/history": typeof AuthenticatedHistoryRoute;
   "/_authenticated/tender-feed": typeof AuthenticatedTenderFeedRoute;
-  "/_authenticated/": typeof AuthenticatedIndexRoute;
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath;
-  fullPaths: "/" | "/auth" | "/audit" | "/history" | "/tender-feed";
+  fullPaths:
+    | "/"
+    | "/auth"
+    | "/audit"
+    | "/dashboard"
+    | "/history"
+    | "/tender-feed";
   fileRoutesByTo: FileRoutesByTo;
-  to: "/auth" | "/audit" | "/history" | "/tender-feed" | "/";
+  to: "/" | "/auth" | "/audit" | "/dashboard" | "/history" | "/tender-feed";
   id:
     | "__root__"
+    | "/"
     | "/_authenticated"
     | "/auth"
     | "/_authenticated/audit"
+    | "/_authenticated/dashboard"
     | "/_authenticated/history"
-    | "/_authenticated/tender-feed"
-    | "/_authenticated/";
+    | "/_authenticated/tender-feed";
   fileRoutesById: FileRoutesById;
 }
 export interface RootRouteChildren {
+  IndexRoute: typeof IndexRoute;
   AuthenticatedRoute: typeof AuthenticatedRouteWithChildren;
   AuthRoute: typeof AuthRoute;
 }
@@ -105,12 +122,12 @@ declare module "@tanstack/react-router" {
       preLoaderRoute: typeof AuthenticatedRouteImport;
       parentRoute: typeof rootRouteImport;
     };
-    "/_authenticated/": {
-      id: "/_authenticated/";
+    "/": {
+      id: "/";
       path: "/";
       fullPath: "/";
-      preLoaderRoute: typeof AuthenticatedIndexRouteImport;
-      parentRoute: typeof AuthenticatedRoute;
+      preLoaderRoute: typeof IndexRouteImport;
+      parentRoute: typeof rootRouteImport;
     };
     "/_authenticated/tender-feed": {
       id: "/_authenticated/tender-feed";
@@ -126,6 +143,13 @@ declare module "@tanstack/react-router" {
       preLoaderRoute: typeof AuthenticatedHistoryRouteImport;
       parentRoute: typeof AuthenticatedRoute;
     };
+    "/_authenticated/dashboard": {
+      id: "/_authenticated/dashboard";
+      path: "/dashboard";
+      fullPath: "/dashboard";
+      preLoaderRoute: typeof AuthenticatedDashboardRouteImport;
+      parentRoute: typeof AuthenticatedRoute;
+    };
     "/_authenticated/audit": {
       id: "/_authenticated/audit";
       path: "/audit";
@@ -138,16 +162,16 @@ declare module "@tanstack/react-router" {
 
 interface AuthenticatedRouteChildren {
   AuthenticatedAuditRoute: typeof AuthenticatedAuditRoute;
+  AuthenticatedDashboardRoute: typeof AuthenticatedDashboardRoute;
   AuthenticatedHistoryRoute: typeof AuthenticatedHistoryRoute;
   AuthenticatedTenderFeedRoute: typeof AuthenticatedTenderFeedRoute;
-  AuthenticatedIndexRoute: typeof AuthenticatedIndexRoute;
 }
 
 const AuthenticatedRouteChildren: AuthenticatedRouteChildren = {
   AuthenticatedAuditRoute: AuthenticatedAuditRoute,
+  AuthenticatedDashboardRoute: AuthenticatedDashboardRoute,
   AuthenticatedHistoryRoute: AuthenticatedHistoryRoute,
   AuthenticatedTenderFeedRoute: AuthenticatedTenderFeedRoute,
-  AuthenticatedIndexRoute: AuthenticatedIndexRoute,
 };
 
 const AuthenticatedRouteWithChildren = AuthenticatedRoute._addFileChildren(
@@ -155,6 +179,7 @@ const AuthenticatedRouteWithChildren = AuthenticatedRoute._addFileChildren(
 );
 
 const rootRouteChildren: RootRouteChildren = {
+  IndexRoute: IndexRoute,
   AuthenticatedRoute: AuthenticatedRouteWithChildren,
   AuthRoute: AuthRoute,
 };

@@ -1,4 +1,4 @@
-import { createFileRoute, useSearch } from "@tanstack/react-router";
+import { createFileRoute, useSearch, useRouter } from "@tanstack/react-router";
 import { useCallback, useEffect, useState } from "react";
 import { supabase } from "@/integrations/supabase/client";
 import { insertAudit, dispatchAuditsUpdated } from "@/integrations/supabase/audits";
@@ -72,7 +72,6 @@ function fileToBase64(file: File): Promise<string> {
 function exportToExcel(analysis: Analysis, projectName: string) {
   const wb = XLSX.utils.book_new();
 
-  // Sheet 1 — Evaluation Matrix
   if (Array.isArray(analysis.evaluation_matrix) && analysis.evaluation_matrix.length > 0) {
     const evalData = [
       ["Criterion", "Score (0–10)", "Weight (%)", "Weighted Score", "Notes"],
@@ -87,7 +86,6 @@ function exportToExcel(analysis: Analysis, projectName: string) {
     XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(evalData), "Evaluation Matrix");
   }
 
-  // Sheet 2 — Risk Matrix
   if (Array.isArray(analysis.risk_matrix) && analysis.risk_matrix.length > 0) {
     const riskData = [
       ["Category", "Severity", "Likelihood (%)", "Impact"],
@@ -96,7 +94,6 @@ function exportToExcel(analysis: Analysis, projectName: string) {
     XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(riskData), "Risk Matrix");
   }
 
-  // Sheet 3 — BoQ Skeleton
   const boqData = [
     ["#", "Item", "Description", "Unit", "Qty", "Unit Rate (ETB)", "Total (ETB)"],
     [1, "Mobilisation", "Site mobilisation & preliminary works", "LS", 1, 2_500_000, 2_500_000],
@@ -131,6 +128,7 @@ function recBadge(r?: string) {
 }
 
 function AuditPage() {
+  const router = useRouter();
   const search = useSearch({ from: "/_authenticated/audit" });
   const prefilledProject = (search as any)?.project ?? "";
 
@@ -174,8 +172,10 @@ function AuditPage() {
     setAnalysis(null);
     if (!projectName.trim()) return setError("Project name is required.");
     if (!contractValue) return setError("Contract value is required.");
+    
     const apiKey = import.meta.env.VITE_GEMINI_API_KEY as string | undefined;
-    if (!apiKey) return setError("VITE_GEMINI_API_KEY is not configured in environment.");
+    if (!apiKey) return setError("VITE_GEMINI_API_KEY is not configured.");
+    
     setLoading(true);
 
     try {
@@ -183,12 +183,11 @@ function AuditPage() {
       const fileBase64 = firstPdf ? await fileToBase64(firstPdf) : undefined;
       const fileNames = files.length > 0 ? files.map((f) => f.name).join(", ") : "n/a";
 
-      const systemPrompt = `You are Valtor AI, an executive construction tender risk analyst for the Ethiopian market.
-Analyze the provided tender data and return ONLY a strict JSON object — no markdown, no commentary.
+      const systemPrompt = `You are Valtor AI, an executive construction tender risk analyst. Return ONLY a strict JSON object.
 Required shape:
 {
   "executive_summary": string,
-  "risk_score": number (0–100, higher = more risk),
+  "risk_score": number,
   "recommendation": "PROCEED" | "PROCEED_WITH_CAUTION" | "DECLINE",
   "financial_assessment": {
     "estimated_cost_etb": number,
@@ -197,10 +196,10 @@ Required shape:
     "cashflow_risk": "LOW" | "MEDIUM" | "HIGH"
   },
   "risk_matrix": [
-    { "category": string, "severity": "LOW"|"MEDIUM"|"HIGH"|"CRITICAL", "likelihood": number (0–100), "impact": string }
+    { "category": string, "severity": "LOW"|"MEDIUM"|"HIGH"|"CRITICAL", "likelihood": number, "impact": string }
   ],
   "evaluation_matrix": [
-    { "criterion": string, "score": number (0–10), "weight": number (0–1), "notes": string }
+    { "criterion": string, "score": number, "weight": number, "notes": string }
   ],
   "key_risks": string[],
   "opportunities": string[],
@@ -208,19 +207,18 @@ Required shape:
 }`;
 
       const userText = `Project: ${projectName}
-Files submitted: ${fileNames}
-Contract Value: ${contractValue} ETB
-Target Margin: ${targetMargin}%
-
-Perform a thorough executive risk audit: assess financial viability against the contract value and target margin, identify key risks and compliance concerns, and produce a weighted evaluation matrix.`;
+Files: ${fileNames}
+Value: ${contractValue} ETB
+Target Margin: ${targetMargin}%`;
 
       const parts: any[] = [{ text: userText }];
       if (fileBase64 && firstPdf) {
         parts.push({ inline_data: { mime_type: "application/pdf", data: fileBase64 } });
       }
 
+      // Fix: Correct model version
       const res = await fetch(
-        `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${apiKey}`,
+        `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${apiKey}`,
         {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -241,26 +239,14 @@ Perform a thorough executive risk audit: assess financial viability against the 
       let text = data?.candidates?.[0]?.content?.parts?.[0]?.text ?? "{}";
       text = text.replace(/```json/gi, "").replace(/```/g, "").trim();
 
-      let a: Analysis;
-      try {
-        a = JSON.parse(text) as Analysis;
-      } catch {
-        throw new Error("Failed to parse AI response as JSON. Check your Gemini API key and quota.");
-      }
+      const a = JSON.parse(text) as Analysis;
       setAnalysis(a);
 
       const { data: userData, error: userError } = await supabase.auth.getUser();
-      if (userError) {
-        throw userError;
-      }
-
-      const user = userData.user;
-      if (!user) {
-        throw new Error("Authenticated user not found.");
-      }
+      if (userError || !userData.user) throw new Error("Authenticated user not found.");
 
       await insertAudit({
-        user_id: user.id,
+        user_id: userData.user.id,
         project_name: projectName,
         file_name: files[0]?.name ?? null,
         contract_value: Number(contractValue),
@@ -271,9 +257,12 @@ Perform a thorough executive risk audit: assess financial viability against the 
         created_at: new Date().toISOString(),
       });
 
+      // Fix: Dispatch event to notify Dashboard/History
       dispatchAuditsUpdated();
+      
     } catch (e) {
-      setError((e as Error).message);
+      console.error(e);
+      setError(e instanceof Error ? e.message : "An error occurred during analysis.");
     } finally {
       setLoading(false);
     }
@@ -283,25 +272,22 @@ Perform a thorough executive risk audit: assess financial viability against the 
     <div>
       <div className="page-header">
         <div className="page-title">Bid Audit</div>
-        <div className="page-subtitle">Upload tender documents, configure financials, and generate a structured AI risk evaluation.</div>
+        <div className="page-subtitle">Upload tender documents and generate AI risk evaluation.</div>
       </div>
 
       <div style={{ display: "grid", gridTemplateColumns: "340px 1fr", gap: "1.5rem", alignItems: "start" }}>
-        {/* Left — Input panel */}
         <div className="panel" style={{ padding: "1.25rem" }}>
           <div style={{ display: "flex", flexDirection: "column", gap: "1rem" }}>
-            {/* Project name */}
             <div>
               <label className="section-label">Project name</label>
               <input
                 value={projectName}
                 onChange={(e) => setProjectName(e.target.value)}
                 className="field-input"
-                placeholder="Addis Ring Road Phase III"
+                placeholder="Project Name"
               />
             </div>
 
-            {/* Dropzone */}
             <div>
               <label className="section-label">Documents</label>
               <div
@@ -323,13 +309,9 @@ Perform a thorough executive risk audit: assess financial viability against the 
                   <div style={{ fontSize: "0.8125rem", fontWeight: 500, color: "#374151" }}>
                     Drop files or click to browse
                   </div>
-                  <div style={{ fontSize: "0.6875rem", color: "#9CA3AF", marginTop: "0.25rem" }}>
-                    PDF, ZIP, XLSX, DOCX accepted
-                  </div>
                 </label>
               </div>
 
-              {/* File queue */}
               {files.length > 0 && (
                 <div className="panel" style={{ marginTop: "0.625rem", overflow: "hidden" }}>
                   {files.map((f, i) => (
@@ -341,11 +323,7 @@ Perform a thorough executive risk audit: assess financial viability against the 
                         </div>
                         <div style={{ fontSize: "0.625rem", color: "#9CA3AF" }}>{fmtSize(f.size)}</div>
                       </div>
-                      <button
-                        onClick={() => removeFile(i)}
-                        className="btn-ghost"
-                        style={{ padding: "0.25rem", flexShrink: 0 }}
-                      >
+                      <button onClick={() => removeFile(i)} className="btn-ghost" style={{ padding: "0.25rem" }}>
                         <X size={13} />
                       </button>
                     </div>
@@ -354,7 +332,6 @@ Perform a thorough executive risk audit: assess financial viability against the 
               )}
             </div>
 
-            {/* Contract value */}
             <div>
               <label className="section-label">Contract value (ETB)</label>
               <input
@@ -362,16 +339,13 @@ Perform a thorough executive risk audit: assess financial viability against the 
                 value={contractValue}
                 onChange={(e) => setContractValue(e.target.value)}
                 className="field-input"
-                placeholder="125,000,000"
               />
             </div>
 
-            {/* Target margin */}
             <div>
               <label className="section-label">Target margin (%)</label>
               <input
                 type="number"
-                step="0.1"
                 value={targetMargin}
                 onChange={(e) => setTargetMargin(e.target.value)}
                 className="field-input"
@@ -384,33 +358,29 @@ Perform a thorough executive risk audit: assess financial viability against the 
               </div>
             )}
 
-            <button onClick={runAudit} disabled={loading} className="btn-primary" style={{ width: "100%", justifyContent: "center", padding: "0.625rem" }}>
+            <button onClick={runAudit} disabled={loading} className="btn-primary" style={{ width: "100%", justifyContent: "center" }}>
               {loading ? (
                 <><Loader2 size={14} className="animate-spin" /> Analysing…</>
               ) : (
-                <><Sparkles size={14} /> Run Audit{files.length > 0 ? ` (${files.length} file${files.length > 1 ? "s" : ""})` : ""}</>
+                <><Sparkles size={14} /> Run Audit</>
               )}
             </button>
           </div>
         </div>
 
-        {/* Right — Results */}
         <div style={{ minHeight: "60vh" }}>
           {!analysis && !loading && (
             <div className="panel" style={{ padding: "4rem 2rem", textAlign: "center", color: "#9CA3AF" }}>
               <Sparkles size={32} style={{ margin: "0 auto 1rem", opacity: 0.3 }} />
-              <div style={{ fontWeight: 600, color: "#374151", fontSize: "0.9375rem", marginBottom: "0.375rem" }}>
-                Ready for analysis
-              </div>
-              <div style={{ fontSize: "0.8125rem" }}>Configure a project and click Run Audit to generate your risk report.</div>
+              <div style={{ fontWeight: 600, color: "#374151" }}>Ready for analysis</div>
+              <div style={{ fontSize: "0.8125rem" }}>Configure a project and click Run Audit.</div>
             </div>
           )}
 
           {loading && (
             <div className="panel" style={{ padding: "4rem 2rem", textAlign: "center" }}>
               <Loader2 size={28} className="animate-spin" color="#0F2240" style={{ margin: "0 auto 1rem" }} />
-              <div style={{ fontWeight: 600, color: "#0D1117", fontSize: "0.9375rem" }}>Running AI analysis…</div>
-              <div style={{ fontSize: "0.8125rem", color: "#6B7280", marginTop: "0.375rem" }}>Evaluating tender package against financial parameters</div>
+              <div style={{ fontWeight: 600, color: "#0D1117" }}>Running AI analysis…</div>
             </div>
           )}
 
@@ -433,173 +403,48 @@ function Results({ analysis, projectName, onExport }: { analysis: Analysis; proj
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: "1rem" }}>
-      {/* Top actions bar */}
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
         <div style={{ fontSize: "0.8125rem", color: "#6B7280" }}>
           Analysis for <strong style={{ color: "#0D1117" }}>{projectName}</strong>
         </div>
         <button onClick={onExport} className="btn-secondary">
           <Download size={13} />
-          Export BoQ & Risk Matrix
+          Export Analysis
         </button>
       </div>
 
-      {/* Summary + Risk score */}
       <div style={{ display: "grid", gridTemplateColumns: "1fr auto", gap: "1rem" }}>
         <div className="panel" style={{ padding: "1.25rem" }}>
           <div className="section-label">Executive Summary</div>
-          <p style={{ fontSize: "0.8125rem", lineHeight: 1.6, color: "#374151" }}>
-            {analysis.executive_summary ?? "—"}
-          </p>
+          <p style={{ fontSize: "0.8125rem", lineHeight: 1.6, color: "#374151" }}>{analysis.executive_summary}</p>
         </div>
-        <div className="panel" style={{ padding: "1.25rem", textAlign: "center", minWidth: "140px", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center" }}>
+        <div className="panel" style={{ padding: "1.25rem", textAlign: "center", minWidth: "140px" }}>
           <div className="section-label">Risk Score</div>
-          <div className={riskClass} style={{ fontSize: "3rem", fontWeight: 800, letterSpacing: "-0.04em", lineHeight: 1 }}>
-            {Math.round(r)}
-          </div>
-          <div style={{ fontSize: "0.6875rem", color: "#9CA3AF", marginBottom: "0.75rem" }}>out of 100</div>
+          <div className={riskClass} style={{ fontSize: "3rem", fontWeight: 800 }}>{Math.round(r)}</div>
           {analysis.recommendation && recBadge(analysis.recommendation)}
         </div>
       </div>
 
-      {/* Financial assessment */}
-      {analysis.financial_assessment && typeof analysis.financial_assessment === "object" && (
-        <div className="panel" style={{ padding: "1.25rem" }}>
-          <div className="section-label">Financial Assessment</div>
-          <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: "1.25rem" }}>
-            {[
-              { label: "Estimated Cost", value: analysis.financial_assessment.estimated_cost_etb ? `${Math.round(Number(analysis.financial_assessment.estimated_cost_etb)).toLocaleString()} ETB` : "—" },
-              { label: "Projected Margin", value: analysis.financial_assessment.projected_margin_pct != null ? `${Number(analysis.financial_assessment.projected_margin_pct)}%` : "—" },
-              { label: "Margin Gap", value: analysis.financial_assessment.margin_gap_pct != null ? `${Number(analysis.financial_assessment.margin_gap_pct)}%` : "—" },
-              { label: "Cashflow Risk", value: String(analysis.financial_assessment.cashflow_risk ?? "—") },
-            ].map(({ label, value }) => (
-              <div key={label}>
-                <div style={{ fontSize: "0.6875rem", color: "#9CA3AF", marginBottom: "0.25rem" }}>{label}</div>
-                <div style={{ fontSize: "1rem", fontWeight: 600, color: "#0D1117" }}>{value}</div>
-              </div>
-            ))}
-          </div>
-        </div>
-      )}
-
-      {/* Risk matrix */}
-      {Array.isArray(analysis.risk_matrix) && analysis.risk_matrix.length > 0 && (
+      {Array.isArray(analysis.risk_matrix) && (
         <div className="panel" style={{ overflow: "hidden" }}>
-          <div style={{ padding: "1rem 1.25rem", borderBottom: "1px solid #E4E7EC", display: "flex", alignItems: "center", gap: "0.5rem" }}>
-            <AlertTriangle size={13} color="#B45309" />
-            <div style={{ fontWeight: 600, fontSize: "0.8125rem" }}>Risk Matrix</div>
-          </div>
+          <div style={{ padding: "1rem 1.25rem", borderBottom: "1px solid #E4E7EC", fontWeight: 600 }}>Risk Matrix</div>
           <table className="data-table">
             <thead>
-              <tr>
-                <th>Severity</th>
-                <th>Category</th>
-                <th>Impact</th>
-                <th className="text-right">Likelihood</th>
-              </tr>
+              <tr><th>Severity</th><th>Category</th><th>Impact</th><th className="text-right">Likelihood</th></tr>
             </thead>
             <tbody>
               {analysis.risk_matrix.map((row, i) => (
                 <tr key={i}>
-                  <td>{severityBadge(String(row.severity || ""))}</td>
-                  <td style={{ fontWeight: 500 }}>{String(row.category || "—")}</td>
-                  <td className="muted">{String(row.impact || "—")}</td>
-                  <td className="text-right muted">{Number(row.likelihood) || 0}%</td>
+                  <td>{severityBadge(row.severity)}</td>
+                  <td>{row.category}</td>
+                  <td className="muted">{row.impact}</td>
+                  <td className="text-right">{row.likelihood}%</td>
                 </tr>
               ))}
             </tbody>
           </table>
-        </div>
-      )}
-
-      {/* Evaluation matrix */}
-      {Array.isArray(analysis.evaluation_matrix) && analysis.evaluation_matrix.length > 0 && (
-        <div className="panel" style={{ overflow: "hidden" }}>
-          <div style={{ padding: "1rem 1.25rem", borderBottom: "1px solid #E4E7EC" }}>
-            <div style={{ fontWeight: 600, fontSize: "0.8125rem" }}>Evaluation Matrix</div>
-          </div>
-          <table className="data-table">
-            <thead>
-              <tr>
-                <th>Criterion</th>
-                <th>Notes</th>
-                <th className="text-right">Score</th>
-                <th className="text-right">Weight</th>
-                <th className="text-right">Weighted</th>
-              </tr>
-            </thead>
-            <tbody>
-              {analysis.evaluation_matrix.map((row, i) => (
-                <tr key={i}>
-                  <td style={{ fontWeight: 500 }}>{String(row.criterion || "—")}</td>
-                  <td className="muted">{String(row.notes || "")}</td>
-                  <td className="text-right">{Number(row.score) || 0}/10</td>
-                  <td className="text-right muted">{(Number(row.weight || 0) * 100).toFixed(0)}%</td>
-                  <td className="text-right" style={{ fontWeight: 600, color: "#0F2240" }}>
-                    {(Number(row.score || 0) * Number(row.weight || 0)).toFixed(2)}
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      )}
-
-      {/* Risks & Opportunities */}
-      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "1rem" }}>
-        {Array.isArray(analysis.key_risks) && analysis.key_risks.length > 0 && (
-          <div className="panel" style={{ padding: "1.25rem" }}>
-            <div style={{ display: "flex", alignItems: "center", gap: "0.375rem", marginBottom: "0.75rem" }}>
-              <XCircle size={13} color="#B91C1C" />
-              <div style={{ fontSize: "0.6875rem", fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.07em", color: "#B91C1C" }}>Key Risks</div>
-            </div>
-            <ul style={{ display: "flex", flexDirection: "column", gap: "0.5rem" }}>
-              {analysis.key_risks.map((it, i) => (
-                <li key={i} style={{ display: "flex", gap: "0.5rem", fontSize: "0.8125rem" }}>
-                  <span style={{ color: "#B91C1C", flexShrink: 0 }}>•</span>
-                  <span style={{ color: "#374151" }}>{String(it)}</span>
-                </li>
-              ))}
-            </ul>
-          </div>
-        )}
-        {Array.isArray(analysis.opportunities) && analysis.opportunities.length > 0 && (
-          <div className="panel" style={{ padding: "1.25rem" }}>
-            <div style={{ display: "flex", alignItems: "center", gap: "0.375rem", marginBottom: "0.75rem" }}>
-              <CheckCircle2 size={13} color="#15803D" />
-              <div style={{ fontSize: "0.6875rem", fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.07em", color: "#15803D" }}>Opportunities</div>
-            </div>
-            <ul style={{ display: "flex", flexDirection: "column", gap: "0.5rem" }}>
-              {analysis.opportunities.map((it, i) => (
-                <li key={i} style={{ display: "flex", gap: "0.5rem", fontSize: "0.8125rem" }}>
-                  <span style={{ color: "#15803D", flexShrink: 0 }}>•</span>
-                  <span style={{ color: "#374151" }}>{String(it)}</span>
-                </li>
-              ))}
-            </ul>
-          </div>
-        )}
-      </div>
-
-      {/* Compliance flags */}
-      {Array.isArray(analysis.compliance_flags) && analysis.compliance_flags.length > 0 && (
-        <div className="panel" style={{ padding: "1.25rem" }}>
-          <div style={{ display: "flex", alignItems: "center", gap: "0.375rem", marginBottom: "0.75rem" }}>
-            <AlertTriangle size={13} color="#B45309" />
-            <div style={{ fontSize: "0.6875rem", fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.07em", color: "#B45309" }}>Compliance Flags</div>
-          </div>
-          <ul style={{ display: "flex", flexDirection: "column", gap: "0.5rem" }}>
-            {analysis.compliance_flags.map((it, i) => (
-              <li key={i} style={{ display: "flex", gap: "0.5rem", fontSize: "0.8125rem" }}>
-                <span style={{ color: "#B45309", flexShrink: 0 }}>⚠</span>
-                <span style={{ color: "#374151" }}>{String(it)}</span>
-              </li>
-            ))}
-          </ul>
         </div>
       )}
     </div>
   );
 }
-
-
