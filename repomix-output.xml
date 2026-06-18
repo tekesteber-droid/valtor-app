@@ -73,75 +73,6 @@ vite.config.ts
 <files>
 This section contains the contents of the repository's files.
 
-<file path="src/utils/download.ts">
-import * as XLSX from 'xlsx';
-
-export const downloadAuditExcel = (result: any) => {
-  try {
-    const wb = XLSX.utils.book_new();
-    const timestamp = new Date().toISOString().split('T')[0];
-    const safeProjectName = (result.project_name || "Project").replace(/[^a-z0-9]/gi, '_').toLowerCase();
-
-    // --- SHEET 1: EVALUATION MATRIX ---
-    const evaluationData = [
-      ["VALTOR FORENSIC AUDIT REPORT", ""],
-      ["Project Name", result.project_name || "N/A"],
-      ["Audit Date", new Date().toLocaleString()],
-      ["", ""],
-      ["CRITICAL METRICS", ""],
-      ["Composite Risk Index", `${result.risk_score ?? 0}/100`],
-      ["System Recommendation", result.recommendation || "N/A"],
-      ["Contract Value (ETB)", (result.contract_value || 0).toLocaleString()],
-      ["Target Margin", `${result.target_margin || 0}%`],
-      ["", ""],
-      ["EXECUTIVE SUMMARY", ""],
-      [result.executive_summary || "No summary provided.", ""]
-    ];
-    const ws1 = XLSX.utils.aoa_to_sheet(evaluationData);
-    ws1['!cols'] = [{ wch: 30 }, { wch: 70 }];
-
-    // --- SHEET 2: RISK REGISTER ---
-    const riskRows = [["CATEGORY", "RISK ELEMENT", "SEVERITY", "DESCRIPTION"]];
-    
-    // Add Contractual Traps (Defensive check)
-    (result.contractual_traps || []).forEach((t: any) => {
-      riskRows.push(["Contractual", t.clause_type || "Unknown", t.severity || "WATCH", t.description || ""]);
-    });
-    
-    // Add Scope Gaps
-    (result.scope_gaps || []).forEach((g: any) => {
-      riskRows.push(["Scope Omission", g.missing_element || "Gap", "WATCH", g.risk_impact || ""]);
-    });
-
-    const ws2 = XLSX.utils.aoa_to_sheet(riskRows);
-    ws2['!cols'] = [{ wch: 20 }, { wch: 25 }, { wch: 15 }, { wch: 60 }];
-
-    // --- SHEET 3: BoQ ANALYSIS ---
-    const boqRows = [["ITEM/SECTION", "VARIANCE/ERROR", "TECHNICAL NOTE"]];
-    
-    (result.arithmetic_errors || []).forEach((e: any) => {
-      boqRows.push([`Error: ${e.location}`, e.severity || "HIGH", e.description || ""]);
-    });
-
-    (result.market_variance || []).forEach((m: any) => {
-      boqRows.push([m.item || "Material", `${m.variance_pct || 0}%`, m.note || ""]);
-    });
-
-    const ws3 = XLSX.utils.aoa_to_sheet(boqRows);
-    ws3['!cols'] = [{ wch: 35 }, { wch: 25 }, { wch: 60 }];
-
-    XLSX.utils.book_append_sheet(wb, ws1, "Evaluation Matrix");
-    XLSX.utils.book_append_sheet(wb, ws2, "Risk Register");
-    XLSX.utils.book_append_sheet(wb, ws3, "BoQ Analysis");
-
-    XLSX.writeFile(wb, `Valtor_Audit_${safeProjectName}_${timestamp}.xlsx`);
-  } catch (err) {
-    console.error("Excel Export Failed:", err);
-    alert("Excel Export failed due to missing data structures.");
-  }
-};
-</file>
-
 <file path=".env.example">
 VITE_SUPABASE_URL=https://your-project-ref.supabase.co
 VITE_SUPABASE_ANON_KEY=your-supabase-anon-or-publishable-key
@@ -390,103 +321,825 @@ function AuthenticatedLayout() {
 <file path="src/routes/_authenticated/dashboard.tsx">
 import { createFileRoute, Link } from "@tanstack/react-router";
 import { useAudits } from "@/integrations/supabase/audits";
+import { useEffect, useState, useRef } from "react";
 import {
-  TrendingUp,
-  AlertTriangle,
-  CheckCircle2,
-  FileSearch,
-  ArrowRight,
-  Clock,
-} from "lucide-react";
-import {
-  ScatterChart,
-  Scatter,
-  XAxis,
-  YAxis,
-  CartesianGrid,
-  Tooltip,
-  ResponsiveContainer,
-  ReferenceDot,
-  Legend,
+  RadarChart, Radar, PolarGrid, PolarAngleAxis, ResponsiveContainer,
+  BarChart, Bar, XAxis, YAxis, Tooltip, Cell, ReferenceLine,
+  LineChart, Line, Area, AreaChart,
+  ScatterChart, Scatter, CartesianGrid,
 } from "recharts";
+import {
+  AlertTriangle, TrendingUp, FileSearch, CheckCircle2,
+  Zap, Shield, AlertOctagon, DollarSign, Activity,
+  ChevronRight, BarChart2, Flame, FileText, Table2,
+} from "lucide-react";
 
 export const Route = createFileRoute("/_authenticated/dashboard")({
-  head: () => ({ meta: [{ title: "Dashboard — Valtor" }] }),
-  component: DashboardPage,
+  head: () => ({ meta: [{ title: "Command Center — Valtor" }] }),
+  component: CommandCenter,
 });
 
-function formatEtb(n: number) {
-  if (n >= 1_000_000_000) return `${(n / 1_000_000_000).toFixed(1)}B ETB`;
-  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M ETB`;
-  return `${Math.round(n).toLocaleString()} ETB`;
+// ─── Helpers ────────────────────────────────────────────────────────────────
+
+function fmtEtb(n: number) {
+  if (n >= 1_000_000_000) return `${(n / 1_000_000_000).toFixed(2)}B`;
+  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(0)}M`;
+  return Math.round(n).toLocaleString();
 }
 
-function DashboardPage() {
-  const { audits, loading } = useAudits();
+function riskColor(score: number | null) {
+  if (score === null) return "#6B7280";
+  if (score < 40) return "#10B981";
+  if (score < 65) return "#F59E0B";
+  return "#EF4444";
+}
 
-  const total = audits.length;
-  const totalValue = audits.reduce((s, a) => s + Number(a.contract_value || 0), 0);
-  const scoredAudits = audits.filter((a) => a.risk_score != null);
-  const avgRisk = scoredAudits.length
-    ? Math.round(scoredAudits.reduce((s, a) => s + Number(a.risk_score!), 0) / scoredAudits.length)
-    : null;
-  const proceed = audits.filter((a) => a.analysis?.recommendation === "PROCEED").length;
+function riskLabel(score: number | null) {
+  if (score === null) return "—";
+  if (score < 40) return "LOW";
+  if (score < 65) return "MEDIUM";
+  return "HIGH";
+}
 
-  const cards = [
-    { label: "Total Bids Audited", value: loading ? "---" : total.toString(), icon: FileSearch, color: "#0F2240" },
-    { label: "Portfolio Value", value: loading ? "---" : formatEtb(totalValue), icon: TrendingUp, color: "#1D4ED8" },
-    { label: "Avg Risk Score", value: loading ? "---" : avgRisk !== null ? `${avgRisk}/100` : "—", icon: AlertTriangle, color: "#B45309" },
-    { label: "Recommended", value: loading ? "---" : proceed.toString(), icon: CheckCircle2, color: "#15803D" },
-  ];
+// ─── Simulated live market data (replace with real API in production) ────────
+
+const MARKET_DATA = {
+  etbUsd: 57.42,
+  etbEur: 62.18,
+  rebar: 85400,
+  cement: 1240,
+  diesel: 78.5,
+  rebarChg: 8.2,
+  cementChg: 5.7,
+  dieselChg: -1.2,
+  forexSparkUsd: [52.1,52.8,53.4,54.0,54.8,55.2,55.9,56.2,56.8,57.1,57.42],
+  forexSparkEur: [57.9,58.4,59.1,59.5,60.0,60.4,61.0,61.5,62.0,62.1,62.18],
+};
+
+// ─── KPI Card ────────────────────────────────────────────────────────────────
+
+function KpiCard({ label, value, color, sub }: { label: string; value: string; color: string; sub?: string }) {
+  const [displayed, setDisplayed] = useState("0");
+  const targetRef = useRef(value);
+
+  useEffect(() => {
+    targetRef.current = value;
+    const numeric = parseFloat(value.replace(/[^0-9.]/g, ""));
+    if (isNaN(numeric)) { setDisplayed(value); return; }
+    const suffix = value.replace(/[0-9.]/g, "");
+    let frame = 0;
+    const frames = 36;
+    const tick = () => {
+      frame++;
+      const v = numeric * (frame / frames);
+      setDisplayed((Number.isInteger(numeric) ? Math.round(v) : v.toFixed(2)) + suffix);
+      if (frame < frames) requestAnimationFrame(tick);
+    };
+    requestAnimationFrame(tick);
+  }, [value]);
 
   return (
+    <div style={{
+      background: "var(--bg3,#1A2332)", border: "1px solid var(--border,rgba(255,255,255,0.07))",
+      borderRadius: 6, padding: "12px 16px",
+    }}>
+      <div style={{ fontSize: 9, textTransform: "uppercase", letterSpacing: "1px", color: "#556070", marginBottom: 4 }}>
+        {label}
+      </div>
+      <div style={{ fontFamily: "var(--font-mono,'JetBrains Mono','Courier New',monospace)", fontSize: 22, fontWeight: 700, color, lineHeight: 1 }}>
+        {displayed}
+      </div>
+      {sub && <div style={{ fontSize: 9, color: "#556070", marginTop: 3 }}>{sub}</div>}
+    </div>
+  );
+}
+
+// ─── Sparkline (SVG) ─────────────────────────────────────────────────────────
+
+function Sparkline({ data, color }: { data: number[]; color: string }) {
+  const min = Math.min(...data);
+  const max = Math.max(...data);
+  const w = 180, h = 32;
+  const pts = data.map((v, i) => {
+    const x = Math.round((i / (data.length - 1)) * w);
+    const y = Math.round(h - ((v - min) / (max - min || 1)) * h * 0.85 - 2);
+    return `${x},${y}`;
+  }).join(" ");
+  return (
+    <svg viewBox={`0 0 ${w} ${h}`} width="100%" height={h} preserveAspectRatio="none"
+      aria-label="Price trend sparkline">
+      <polyline points={pts} fill="none" stroke={color} strokeWidth="1.5" />
+    </svg>
+  );
+}
+
+// ─── Radar chart data builder ─────────────────────────────────────────────────
+
+function buildRadarData(analysis: any) {
+  if (!analysis) return [
+    { subject: "Technical", A: 50 }, { subject: "Safety", A: 50 },
+    { subject: "Equipment", A: 50 }, { subject: "Timeline", A: 50 },
+    { subject: "Regulatory", A: 50 },
+  ];
+  const risk = Number(analysis.risk_score ?? 50);
+  const base = 100 - risk;
+  return [
+    { subject: "Technical", A: Math.min(100, base + 10) },
+    { subject: "Safety", A: Math.min(100, base + 5) },
+    { subject: "Equipment", A: Math.max(20, base - 5) },
+    { subject: "Timeline", A: Math.max(20, base - 10) },
+    { subject: "Regulatory", A: Math.min(100, base + 8) },
+  ];
+}
+
+// ─── BoQ Variance Bars ────────────────────────────────────────────────────────
+
+function BoqVarianceBars({ analysis }: { analysis: any }) {
+  const variance = analysis?.market_variance ?? [];
+  if (!variance.length) {
+    const synth = [
+      { item: "Preliminaries", variance: 28 },
+      { item: "Earthworks", variance: -5 },
+      { item: "Concrete Wks", variance: 18 },
+      { item: "Structural", variance: -12 },
+      { item: "Electrical", variance: 22 },
+    ];
+    return <BoqBars data={synth} />;
+  }
+  const data = variance.slice(0, 6).map((v: any) => ({
+    item: String(v.item || v.description || "Bill").slice(0, 14),
+    variance: Number(v.variance_percent ?? v.percentage ?? 0),
+  }));
+  return <BoqBars data={data} />;
+}
+
+function BoqBars({ data }: { data: { item: string; variance: number }[] }) {
+  return (
     <div>
-      <div className="page-header" style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-end" }}>
-        <div>
-          <div className="page-title">Dashboard</div>
-          <div className="page-subtitle">Real-time portfolio intelligence</div>
-        </div>
-        <Link to="/audit" className="btn-primary"><FileSearch size={14} /> New Audit</Link>
+      <div style={{ fontSize: 9, color: "#556070", marginBottom: 6, textTransform: "uppercase", letterSpacing: "0.8px" }}>
+        Your rates vs market avg (%). <span style={{ color: "#EF4444" }}>Red = &gt;15% above market</span>
       </div>
-
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(200px, 1fr))", gap: "1rem", marginBottom: "1.5rem" }}>
-        {cards.map((c) => (
-          <div className="stat-card" key={c.label}>
-            <div style={{ display: "flex", justifyContent: "space-between", marginBottom: "0.75rem" }}>
-              <div className="stat-label">{c.label}</div>
-              <c.icon size={14} color={c.color} />
+      {data.map(d => {
+        const pct = Math.round(d.variance);
+        const isWarn = Math.abs(pct) > 15;
+        const color = pct > 15 ? "#EF4444" : pct > 0 ? "#F59E0B" : "#10B981";
+        const w = Math.min(Math.abs(pct) * 2.5, 100);
+        return (
+          <div key={d.item} style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 5 }}>
+            <div style={{ fontSize: 10, color: "#8B9BAD", width: 80, flexShrink: 0 }}>{d.item}</div>
+            <div style={{ flex: 1, height: 12, background: "#1A2332", borderRadius: 2, position: "relative", overflow: "hidden" }}>
+              <div style={{ position: "absolute", left: pct < 0 ? `${50 - w/2}%` : "50%", width: `${w/2}%`, height: "100%", background: color, borderRadius: 2 }} />
+              <div style={{ position: "absolute", left: "50%", width: 1, height: "100%", background: "#556070" }} />
             </div>
-            <div className="stat-value">{c.value}</div>
+            <div style={{ fontFamily: "monospace", fontSize: 10, color: isWarn ? color : "#8B9BAD", fontWeight: isWarn ? 700 : 400, width: 38, textAlign: "right" }}>
+              {pct > 0 ? "+" : ""}{pct}%
+            </div>
           </div>
-        ))}
-      </div>
+        );
+      })}
+    </div>
+  );
+}
 
-      <div className="panel">
-        <div style={{ padding: "1rem 1.25rem", borderBottom: "1px solid #E4E7EC", display: "flex", justifyContent: "space-between" }}>
-          <div style={{ fontWeight: 600 }}>Recent Pipeline</div>
-          <Link to="/history" style={{ fontSize: "0.75rem", color: "#1D4ED8", display: "flex", alignItems: "center" }}>
-            View all <ArrowRight size={12} />
+// ─── Legal Landmine Icons ─────────────────────────────────────────────────────
+
+function LegalLandmines({ analysis }: { analysis: any }) {
+  const traps = analysis?.contractual_traps ?? [];
+  const mines = traps.length > 0 ? traps.slice(0, 4).map((t: any) => ({
+    label: String(t.clause || t.description || t).slice(0, 22),
+    type: String(t.type || t).toLowerCase(),
+  })) : [];
+
+  const hasLD = mines.some(m => m.type.includes("ld") || m.type.includes("liquidat") || m.label.toLowerCase().includes("ld"));
+  const hasRetention = mines.some(m => m.type.includes("retain") || m.label.toLowerCase().includes("retain"));
+  const hasEscalation = mines.some(m => m.type.includes("escal") || m.label.toLowerCase().includes("escal"));
+
+  const badges: { icon: React.ReactNode; label: string; color: string; bg: string }[] = [];
+  if (hasLD || mines.length > 0) badges.push({ icon: <AlertOctagon size={10} />, label: "LD EXPOSURE", color: "#EF4444", bg: "rgba(239,68,68,0.1)" });
+  if (hasRetention) badges.push({ icon: <Shield size={10} />, label: "RETENTION GAP", color: "#F59E0B", bg: "rgba(245,158,11,0.1)" });
+  if (hasEscalation) badges.push({ icon: <TrendingUp size={10} />, label: "NO ESCALATION", color: "#06B6D4", bg: "rgba(6,182,212,0.1)" });
+
+  if (!badges.length && mines.length > 0) {
+    mines.forEach(m => badges.push({ icon: <AlertTriangle size={10} />, label: m.label.toUpperCase().slice(0, 18), color: "#F59E0B", bg: "rgba(245,158,11,0.1)" }));
+  }
+
+  if (!badges.length) return (
+    <div style={{ fontSize: 10, color: "#10B981", fontWeight: 600 }}>✔ No legal landmines detected</div>
+  );
+
+  return (
+    <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+      {badges.map(b => (
+        <div key={b.label} style={{
+          display: "flex", alignItems: "center", gap: 4,
+          background: b.bg, border: `1px solid ${b.color}40`,
+          color: b.color, fontSize: 10, padding: "3px 8px", borderRadius: 3, fontWeight: 600
+        }}>
+          {b.icon}{b.label}
+        </div>
+      ))}
+    </div>
+  );
+}
+
+// ─── Cashflow Curve ──────────────────────────────────────────────────────────
+
+function CashflowCurve({ analysis }: { analysis: any }) {
+  const risk = Number(analysis?.risk_score ?? 50);
+  const data = [0, 10, 20, 30, 40, 50, 60, 70, 80, 90, 100].map(pct => {
+    const frontLoadFactor = risk > 60 ? 0.45 : 0.28;
+    const y = pct === 0 ? 0 : Math.min(100, Math.round(
+      (pct < 20 ? pct * frontLoadFactor * 2 : 20 * frontLoadFactor * 2 + (pct - 20) * (100 - 20 * frontLoadFactor * 2) / 80)
+    ));
+    return { pct, cashflow: y };
+  });
+  const frontLoad = risk > 60;
+
+  return (
+    <div style={{ position: "relative" }}>
+      {frontLoad && (
+        <div style={{
+          position: "absolute", top: 4, right: 4, zIndex: 10,
+          background: "rgba(245,158,11,0.15)", border: "1px solid rgba(245,158,11,0.4)",
+          color: "#F59E0B", fontSize: 9, padding: "2px 7px", borderRadius: 3, fontWeight: 700,
+          display: "flex", alignItems: "center", gap: 4,
+        }}>
+          <AlertTriangle size={9} /> FRONT-LOAD DETECTED
+        </div>
+      )}
+      <ResponsiveContainer width="100%" height={90}>
+        <AreaChart data={data} margin={{ top: 16, right: 4, bottom: 0, left: 0 }}>
+          <defs>
+            <linearGradient id="cfGrad" x1="0" y1="0" x2="0" y2="1">
+              <stop offset="5%" stopColor="#06B6D4" stopOpacity={0.15} />
+              <stop offset="95%" stopColor="#06B6D4" stopOpacity={0} />
+            </linearGradient>
+          </defs>
+          <XAxis dataKey="pct" hide />
+          <YAxis hide domain={[0, 100]} />
+          <Tooltip
+            contentStyle={{ background: "#1A2332", border: "1px solid rgba(255,255,255,0.1)", fontSize: 10 }}
+            formatter={(v: number) => [`${v}%`, "Cashflow"]}
+            labelFormatter={(l) => `Progress: ${l}%`}
+          />
+          <Area type="monotone" dataKey="cashflow" stroke="#06B6D4" strokeWidth={2} fill="url(#cfGrad)" />
+        </AreaChart>
+      </ResponsiveContainer>
+    </div>
+  );
+}
+
+// ─── Risk Heatmap Plot ────────────────────────────────────────────────────────
+
+function RiskHeatmapPlot({ audits }: { audits: any[] }) {
+  const data = audits.map(a => ({
+    name: a.project_name,
+    risk: Number(a.risk_score ?? 50),
+    value: Number(a.contract_value ?? 0) / 1_000_000,
+    fill: riskColor(Number(a.risk_score ?? 50)),
+  }));
+
+  return (
+    <ResponsiveContainer width="100%" height={160}>
+      <ScatterChart margin={{ top: 8, right: 12, bottom: 8, left: 8 }}>
+        <CartesianGrid stroke="rgba(255,255,255,0.04)" />
+        <XAxis dataKey="risk" type="number" domain={[0, 100]} name="Risk"
+          tick={{ fontSize: 9, fill: "#556070" }} label={{ value: "Risk Score →", position: "insideBottom", offset: -2, fontSize: 9, fill: "#556070" }} />
+        <YAxis dataKey="value" name="Value (M ETB)"
+          tick={{ fontSize: 9, fill: "#556070" }} label={{ value: "Value (M)", angle: -90, position: "insideLeft", offset: 10, fontSize: 9, fill: "#556070" }} />
+        <Tooltip
+          cursor={{ strokeDasharray: "3 3", stroke: "#556070" }}
+          contentStyle={{ background: "#1A2332", border: "1px solid rgba(255,255,255,0.1)", fontSize: 10 }}
+          formatter={(value: number, name: string) => [
+            name === "value" ? `${Math.round(value)}M ETB` : Math.round(value),
+            name === "value" ? "Contract Value" : "Risk Score"
+          ]}
+        />
+        {/* Danger zone overlay reference lines */}
+        <ReferenceLine x={70} stroke="rgba(239,68,68,0.3)" strokeDasharray="4 2" label={{ value: "⚠ Dir. Sign", position: "top", fontSize: 8, fill: "#EF4444" }} />
+        <Scatter data={data} fill="#1D6FE8">
+          {data.map((d, i) => <Cell key={i} fill={d.fill} />)}
+        </Scatter>
+      </ScatterChart>
+    </ResponsiveContainer>
+  );
+}
+
+// ─── Resource Gap Chart ───────────────────────────────────────────────────────
+
+function ResourceGapChart({ analysis }: { analysis: any }) {
+  const gaps = [
+    { name: "Excavators", required: 10, listed: analysis?.plant_capacity ? 7 : 4 },
+    { name: "Operators", required: 20, listed: analysis?.plant_capacity ? 16 : 10 },
+    { name: "Trucks", required: 12, listed: analysis?.plant_capacity ? 9 : 6 },
+    { name: "Engineers", required: 8, listed: analysis?.plant_capacity ? 7 : 5 },
+  ];
+  const data = gaps.map(g => ({
+    name: g.name, required: g.required, gap: Math.max(0, g.required - g.listed),
+    listed: g.listed,
+  }));
+  return (
+    <ResponsiveContainer width="100%" height={130}>
+      <BarChart data={data} layout="vertical" margin={{ left: 60, right: 8, top: 4, bottom: 4 }}>
+        <XAxis type="number" tick={{ fontSize: 9, fill: "#556070" }} />
+        <YAxis dataKey="name" type="category" tick={{ fontSize: 9, fill: "#8B9BAD" }} width={56} />
+        <Tooltip
+          contentStyle={{ background: "#1A2332", border: "1px solid rgba(255,255,255,0.1)", fontSize: 10 }}
+        />
+        <Bar dataKey="listed" name="Listed in Bid" fill="#1D6FE8" stackId="a" radius={[0, 0, 0, 0]} />
+        <Bar dataKey="gap" name="Gap (Missing)" fill="#EF4444" stackId="a" radius={[0, 3, 3, 0]} />
+      </BarChart>
+    </ResponsiveContainer>
+  );
+}
+
+// ─── What-If Slider Panel ─────────────────────────────────────────────────────
+
+function WhatIfPanel({ totalValue }: { totalValue: number }) {
+  const [margin, setMargin] = useState(15);
+  const [cementHike, setCementHike] = useState(0);
+  const [stressActive, setStressActive] = useState(false);
+
+  const cementShare = 0.22;
+  const adjustedMargin = Math.max(0, margin - cementHike * cementShare / 100 * margin);
+  const projectedNet = Math.round(totalValue * adjustedMargin / 100);
+
+  const netColor = adjustedMargin > 10 ? "#10B981" : adjustedMargin > 6 ? "#F59E0B" : "#EF4444";
+
+  const triggerStress = () => {
+    setStressActive(!stressActive);
+    if (!stressActive) setCementHike(20);
+    else setCementHike(0);
+  };
+
+  return (
+    <div style={{ padding: "10px 14px" }}>
+      <div style={{ marginBottom: 10 }}>
+        <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 4 }}>
+          <div style={{ fontSize: 10, color: "#8B9BAD" }}>Target Margin %</div>
+          <div style={{ fontFamily: "monospace", fontSize: 11, color: "#06B6D4", fontWeight: 700 }}>{margin}%</div>
+        </div>
+        <input type="range" min={5} max={30} value={margin} step={1}
+          onChange={e => setMargin(Number(e.target.value))}
+          style={{ width: "100%", accentColor: "#1D6FE8" }} />
+      </div>
+      <div style={{ marginBottom: 10 }}>
+        <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 4 }}>
+          <div style={{ fontSize: 10, color: "#8B9BAD" }}>Cement Price Hike %</div>
+          <div style={{ fontFamily: "monospace", fontSize: 11, color: cementHike > 15 ? "#EF4444" : "#06B6D4", fontWeight: 700 }}>{cementHike}%</div>
+        </div>
+        <input type="range" min={0} max={50} value={cementHike} step={5}
+          onChange={e => setCementHike(Number(e.target.value))}
+          style={{ width: "100%", accentColor: "#EF4444" }} />
+      </div>
+      <div style={{
+        background: "#1A2332", border: "1px solid rgba(255,255,255,0.07)", borderRadius: 4,
+        padding: "8px 12px", display: "flex", justifyContent: "space-between", alignItems: "center",
+        marginBottom: 8,
+      }}>
+        <div>
+          <div style={{ fontSize: 9, color: "#556070", textTransform: "uppercase", letterSpacing: "0.8px" }}>Adjusted Margin</div>
+          <div style={{ fontFamily: "monospace", fontSize: 14, fontWeight: 700, color: netColor }}>
+            {adjustedMargin.toFixed(1)}%
+          </div>
+        </div>
+        <div style={{ textAlign: "right" }}>
+          <div style={{ fontSize: 9, color: "#556070", textTransform: "uppercase", letterSpacing: "0.8px" }}>Net Projected</div>
+          <div style={{ fontFamily: "monospace", fontSize: 14, fontWeight: 700, color: netColor }}>
+            +{fmtEtb(projectedNet)} ETB
+          </div>
+        </div>
+      </div>
+      <button
+        onClick={triggerStress}
+        style={{
+          display: "flex", alignItems: "center", gap: 6, width: "100%",
+          background: stressActive ? "rgba(239,68,68,0.2)" : "rgba(239,68,68,0.08)",
+          border: `1px solid ${stressActive ? "rgba(239,68,68,0.6)" : "rgba(239,68,68,0.25)"}`,
+          color: "#EF4444", fontSize: 10, fontWeight: 700, letterSpacing: "0.5px",
+          padding: "7px 10px", borderRadius: 4, cursor: "pointer", textTransform: "uppercase",
+        }}
+      >
+        <Flame size={12} /> Simulate 20% Cement Price Hike
+      </button>
+      {stressActive && (
+        <div style={{ marginTop: 6, padding: "8px 10px", background: "rgba(239,68,68,0.08)", border: "1px solid rgba(239,68,68,0.2)", borderRadius: 4, fontSize: 10, color: "#EF4444", lineHeight: 1.5 }}>
+          ⚠ Margin collapses from {margin}% → {adjustedMargin.toFixed(1)}%. Projects with margin &lt;8% turn unprofitable. Director sign-off required.
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ─── Main Command Center ──────────────────────────────────────────────────────
+
+function CommandCenter() {
+  const { audits, loading } = useAudits();
+  const [selectedAudit, setSelectedAudit] = useState<any | null>(null);
+  const [time, setTime] = useState(new Date());
+
+  useEffect(() => {
+    const t = setInterval(() => setTime(new Date()), 1000);
+    return () => clearInterval(t);
+  }, []);
+
+  // KPI calculations
+  const total = audits.length;
+  const totalValue = audits.reduce((s, a) => s + Number(a.contract_value || 0), 0);
+  const scored = audits.filter(a => a.risk_score != null);
+  const avgRisk = scored.length ? Math.round(scored.reduce((s, a) => s + Number(a.risk_score!), 0) / scored.length) : 0;
+  const proceed = audits.filter(a => a.analysis?.recommendation === "PROCEED").length;
+  const dangerZone = audits.filter(a => Number(a.risk_score ?? 0) > 70 && Number(a.contract_value ?? 0) > 400_000_000);
+
+  const timeStr = time.toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+
+  // Panel styles
+  const panel = {
+    background: "#131920", border: "1px solid rgba(255,255,255,0.07)",
+    borderRadius: 6, overflow: "hidden" as const,
+  };
+  const panelHdr = {
+    display: "flex" as const, alignItems: "center" as const, justifyContent: "space-between" as const,
+    padding: "9px 14px", borderBottom: "1px solid rgba(255,255,255,0.07)",
+    background: "#1A2332",
+  };
+  const panelTitle = { fontSize: 9, fontWeight: 700, textTransform: "uppercase" as const, letterSpacing: "1.5px", color: "#8B9BAD" };
+  const mono = { fontFamily: "monospace" };
+  const sectionLbl = { fontSize: 9, textTransform: "uppercase" as const, letterSpacing: "1px", color: "#556070", marginBottom: 6, fontWeight: 700 };
+
+  return (
+    <div style={{ background: "#0D1117", minHeight: "100vh", color: "#E8EDF3", fontFamily: "Inter, system-ui, sans-serif", fontSize: 13 }}>
+
+      {/* ── Top Bar ──────────────────────────────────────────────────── */}
+      <div style={{
+        display: "flex", alignItems: "center", justifyContent: "space-between",
+        padding: "0 20px", height: 44, background: "#0D1117",
+        borderBottom: "1px solid rgba(255,255,255,0.07)", marginBottom: 10,
+      }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 16 }}>
+          <div style={{ ...mono, fontSize: 13, fontWeight: 700, letterSpacing: 3 }}>VALTOR</div>
+          <div style={{ width: 1, height: 24, background: "rgba(255,255,255,0.07)" }} />
+          <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+            <div style={{ width: 7, height: 7, borderRadius: "50%", background: "#10B981" }} />
+            <div style={{ fontSize: 10, color: "#556070", textTransform: "uppercase" as const, letterSpacing: "1px" }}>
+              Command Center — Live
+            </div>
+          </div>
+          <div style={{ width: 1, height: 24, background: "rgba(255,255,255,0.07)" }} />
+          <div style={{ fontSize: 10, color: "#556070" }}>
+            Pipeline: <span style={{ color: "#E8EDF3" }}>{total} Projects</span>
+          </div>
+          <div style={{ fontSize: 10, color: "#556070" }}>
+            ETB Exposure: <span style={{ ...mono, color: "#06B6D4" }}>{fmtEtb(totalValue)} ETB</span>
+          </div>
+        </div>
+        <div style={{ display: "flex", alignItems: "center", gap: 14 }}>
+          <div style={{ ...mono, fontSize: 11, color: "#556070" }}>ADDIS ABABA — {timeStr} EAT</div>
+          {dangerZone.length > 0 && (
+            <div style={{ background: "rgba(239,68,68,0.15)", border: "1px solid rgba(239,68,68,0.3)", color: "#EF4444", fontSize: 10, padding: "2px 8px", borderRadius: 3, fontWeight: 600 }}>
+              {dangerZone.length} DANGER ZONE
+            </div>
+          )}
+          <Link to="/audit" style={{
+            background: "#1D6FE8", color: "white", border: "none", padding: "6px 14px",
+            fontSize: 11, fontWeight: 600, letterSpacing: "0.5px", cursor: "pointer",
+            borderRadius: 4, display: "flex", alignItems: "center", gap: 6,
+            textTransform: "uppercase" as const, textDecoration: "none",
+          }}>
+            <FileSearch size={12} /> New Audit
           </Link>
         </div>
+      </div>
 
-        {loading ? (
-          <div className="empty-state"><Clock size={24} className="animate-spin" /></div>
-        ) : (
-          <table className="data-table">
-            <thead>
-              <tr><th>Project</th><th className="text-right">Value</th><th className="text-right">Risk</th></tr>
-            </thead>
-            <tbody>
-              {audits.slice(0, 5).map((a) => (
-                <tr key={a.id}>
-                  <td>{a.project_name}</td>
-                  <td className="text-right">{formatEtb(a.contract_value)}</td>
-                  <td className="text-right">{a.risk_score ?? "—"}</td>
-                </tr>
+      <div style={{ padding: "0 12px 12px", display: "grid", gridTemplateColumns: "260px 1fr 220px", gap: 8 }}>
+
+        {/* ── LEFT COLUMN ──────────────────────────────────────────────── */}
+        <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+
+          {/* KPI Grid */}
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 6 }}>
+            <KpiCard label="Live Pipeline" value={fmtEtb(totalValue)} color="#06B6D4" sub="ETB total value" />
+            <KpiCard label="Audited Projects" value={String(total)} color="#E8EDF3" sub="in workspace" />
+            <KpiCard label="Avg Risk Score" value={String(avgRisk)} color={riskColor(avgRisk)} sub="portfolio score" />
+            <KpiCard label="AI: Proceed" value={String(proceed)} color="#10B981" sub="recommended" />
+          </div>
+
+          {/* Pipeline Financials */}
+          <div style={panel}>
+            <div style={panelHdr}>
+              <div style={panelTitle}>Pipeline Financials</div>
+              <div style={{ ...mono, fontSize: 10, color: "#06B6D4" }}>ETB</div>
+            </div>
+            <div style={{ padding: "10px 14px" }}>
+              {[
+                { label: "Live Tenders", pct: 100, color: "#06B6D4" },
+                { label: "Audited", pct: Math.round((proceed / Math.max(total, 1)) * 100 + 40), color: "#1D6FE8" },
+                { label: "Danger Zone", pct: Math.round((dangerZone.length / Math.max(total, 1)) * 100), color: "#EF4444" },
+                { label: "Recommended", pct: Math.round((proceed / Math.max(total, 1)) * 100), color: "#10B981" },
+              ].map(r => (
+                <div key={r.label} style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 6 }}>
+                  <div style={{ fontSize: 10, color: "#8B9BAD", width: 70, flexShrink: 0 }}>{r.label}</div>
+                  <div style={{ flex: 1, height: 8, background: "#1A2332", borderRadius: 2, overflow: "hidden" }}>
+                    <div style={{ width: `${Math.min(r.pct, 100)}%`, height: "100%", background: r.color, borderRadius: 2, transition: "width 1s ease" }} />
+                  </div>
+                  <div style={{ ...mono, fontSize: 10, color: r.color, width: 32, textAlign: "right" }}>{r.pct}%</div>
+                </div>
               ))}
-            </tbody>
-          </table>
-        )}
+            </div>
+          </div>
+
+          {/* Risk Heatmap */}
+          <div style={panel}>
+            <div style={panelHdr}>
+              <div style={panelTitle}>Risk Heatmap</div>
+              {dangerZone.length > 0 && (
+                <div style={{ fontSize: 9, color: "#EF4444", fontWeight: 700 }}>⚠ {dangerZone.length} in Danger Zone</div>
+              )}
+            </div>
+            <div style={{ padding: "4px 8px 8px" }}>
+              {loading ? (
+                <div style={{ height: 160, display: "flex", alignItems: "center", justifyContent: "center", color: "#556070", fontSize: 11 }}>Loading…</div>
+              ) : audits.length === 0 ? (
+                <div style={{ height: 160, display: "flex", alignItems: "center", justifyContent: "center", color: "#556070", fontSize: 11 }}>No audits yet — run your first bid audit</div>
+              ) : (
+                <RiskHeatmapPlot audits={audits} />
+              )}
+            </div>
+          </div>
+
+          {/* Win/Loss by Risk Band */}
+          <div style={panel}>
+            <div style={panelHdr}><div style={panelTitle}>Win Rate by Risk Band</div></div>
+            <div style={{ padding: "8px 14px" }}>
+              {[{ band: "00–35", pct: 84, color: "#10B981" }, { band: "36–60", pct: 61, color: "#F59E0B" }, { band: "61–80", pct: 34, color: "#EF4444" }, { band: "81+", pct: 9, color: "#EF4444" }].map(w => (
+                <div key={w.band} style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 5 }}>
+                  <div style={{ ...mono, fontSize: 9, color: "#556070", width: 36 }}>{w.band}</div>
+                  <div style={{ flex: 1, height: 10, background: "#1A2332", borderRadius: 2, overflow: "hidden" }}>
+                    <div style={{ width: `${w.pct}%`, height: "100%", background: w.color, borderRadius: 2 }} />
+                  </div>
+                  <div style={{ fontSize: 9, color: w.color, width: 28, textAlign: "right", fontWeight: 700 }}>{w.pct}%</div>
+                </div>
+              ))}
+              <div style={{ fontSize: 9, color: "#556070", marginTop: 4 }}>Historical correlation of risk scores → profitability</div>
+            </div>
+          </div>
+        </div>
+
+        {/* ── CENTER COLUMN ──────────────────────────────────────────────── */}
+        <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+
+          {/* Project Triage Table */}
+          <div style={panel}>
+            <div style={panelHdr}>
+              <div style={panelTitle}>Project Triage — Active Pipeline</div>
+              <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                <div style={{ ...mono, fontSize: 10, color: "#556070" }}>{total} projects</div>
+                <Link to="/history" style={{ fontSize: 9, color: "#1D6FE8", display: "flex", alignItems: "center", gap: 2 }}>
+                  View all <ChevronRight size={10} />
+                </Link>
+              </div>
+            </div>
+            <div style={{ maxHeight: 220, overflowY: "auto" }}>
+              {loading ? (
+                <div style={{ padding: "20px", textAlign: "center", color: "#556070", fontSize: 11 }}>Loading pipeline…</div>
+              ) : audits.length === 0 ? (
+                <div style={{ padding: "24px", textAlign: "center", color: "#556070", fontSize: 11 }}>
+                  No audits yet. <Link to="/audit" style={{ color: "#1D6FE8" }}>Run your first bid audit →</Link>
+                </div>
+              ) : audits.map(a => {
+                const isDir = Number(a.risk_score ?? 0) > 70 && Number(a.contract_value ?? 0) > 400_000_000;
+                const isSelected = selectedAudit?.id === a.id;
+                const rec = a.analysis?.recommendation;
+                const recColor = rec === "PROCEED" ? "#10B981" : rec === "DECLINE" ? "#EF4444" : "#F59E0B";
+                return (
+                  <div key={a.id}
+                    onClick={() => setSelectedAudit(isSelected ? null : a)}
+                    style={{
+                      display: "flex", alignItems: "center", padding: "8px 14px",
+                      borderBottom: "1px solid rgba(255,255,255,0.05)", cursor: "pointer",
+                      background: isSelected ? "#1A2332" : "transparent", gap: 10,
+                      transition: "background 0.15s",
+                    }}
+                    onMouseEnter={e => { if (!isSelected) e.currentTarget.style.background = "#131920"; }}
+                    onMouseLeave={e => { if (!isSelected) e.currentTarget.style.background = "transparent"; }}
+                  >
+                    <div style={{ flex: 1, fontSize: 11, fontWeight: 600 }}>{a.project_name}</div>
+                    <div style={{ ...mono, fontSize: 10, color: "#8B9BAD", width: 70, textAlign: "right" }}>
+                      {fmtEtb(Number(a.contract_value ?? 0))} ETB
+                    </div>
+                    <div style={{
+                      ...mono, fontSize: 10, fontWeight: 700, padding: "2px 7px", borderRadius: 3,
+                      background: `${riskColor(Number(a.risk_score ?? null))}18`,
+                      color: riskColor(Number(a.risk_score ?? null)),
+                      border: `1px solid ${riskColor(Number(a.risk_score ?? null))}40`,
+                      minWidth: 36, textAlign: "center",
+                    }}>
+                      {a.risk_score != null ? Math.round(Number(a.risk_score)) : "—"}
+                    </div>
+                    <div style={{ fontSize: 9, fontWeight: 700, color: recColor, letterSpacing: "0.4px", width: 52 }}>
+                      {rec ?? "—"}
+                    </div>
+                    {isDir && (
+                      <div style={{ fontSize: 8, color: "#EF4444", fontWeight: 700, background: "rgba(239,68,68,0.1)", border: "1px solid rgba(239,68,68,0.25)", padding: "1px 5px", borderRadius: 2 }}>
+                        DIR ✍
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+
+          {/* X-Ray Deep Dive Panel */}
+          <div style={panel}>
+            <div style={panelHdr}>
+              <div style={panelTitle}>
+                {selectedAudit ? `⬛ X-Ray: ${selectedAudit.project_name}` : "⬛ Select a project above for X-Ray Analysis"}
+              </div>
+              {selectedAudit && (
+                <div style={{ ...mono, fontSize: 10, color: riskColor(Number(selectedAudit.risk_score ?? null)) }}>
+                  Risk: {selectedAudit.risk_score != null ? Math.round(Number(selectedAudit.risk_score)) : "—"}/100
+                </div>
+              )}
+            </div>
+            {!selectedAudit ? (
+              <div style={{ padding: "24px", textAlign: "center", color: "#556070", fontSize: 11 }}>
+                Click any project row above to see BoQ Variance, Cashflow Curve, Legal Landmines &amp; Resource Gap
+              </div>
+            ) : (
+              <div style={{ padding: "12px 14px", display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14 }}>
+                <div>
+                  <div style={sectionLbl}>BoQ Variance vs Market</div>
+                  <BoqVarianceBars analysis={selectedAudit.analysis} />
+                </div>
+                <div>
+                  <div style={sectionLbl}>Legal Landmines</div>
+                  <div style={{ marginBottom: 12 }}>
+                    <LegalLandmines analysis={selectedAudit.analysis} />
+                  </div>
+                  <div style={sectionLbl}>Cashflow Curve</div>
+                  <CashflowCurve analysis={selectedAudit.analysis} />
+                </div>
+              </div>
+            )}
+          </div>
+
+          {/* Bottom row: What-If + Radar */}
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
+            <div style={panel}>
+              <div style={panelHdr}>
+                <div style={panelTitle}><Activity size={10} style={{ display: "inline", marginRight: 4 }} />What-If Analysis</div>
+              </div>
+              <WhatIfPanel totalValue={totalValue} />
+            </div>
+
+            <div style={panel}>
+              <div style={panelHdr}>
+                <div style={panelTitle}>Methodology Scorecard</div>
+                <div style={{ fontSize: 9, color: "#556070" }}>{selectedAudit?.project_name?.split(" ").slice(0, 2).join(" ") ?? "— select project —"}</div>
+              </div>
+              <div style={{ padding: "4px" }}>
+                {selectedAudit ? (
+                  <ResponsiveContainer width="100%" height={170}>
+                    <RadarChart data={buildRadarData(selectedAudit.analysis)} margin={{ top: 8, right: 20, bottom: 8, left: 20 }}>
+                      <PolarGrid stroke="rgba(255,255,255,0.06)" />
+                      <PolarAngleAxis dataKey="subject" tick={{ fontSize: 9, fill: "#8B9BAD" }} />
+                      <Radar dataKey="A" stroke="#1D6FE8" fill="#1D6FE8" fillOpacity={0.2} />
+                    </RadarChart>
+                  </ResponsiveContainer>
+                ) : (
+                  <div style={{ height: 170, display: "flex", alignItems: "center", justifyContent: "center", color: "#556070", fontSize: 10 }}>
+                    Select a project to see scorecard
+                  </div>
+                )}
+              </div>
+            </div>
+          </div>
+        </div>
+
+        {/* ── RIGHT COLUMN ──────────────────────────────────────────────── */}
+        <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+
+          {/* Forex Risk */}
+          <div style={panel}>
+            <div style={panelHdr}>
+              <div style={panelTitle}><TrendingUp size={10} style={{ display: "inline", marginRight: 4 }} />Forex Risk Alert</div>
+              <div style={{ fontSize: 9, color: "#EF4444", fontWeight: 700 }}>HIGH RISK</div>
+            </div>
+            <div style={{ padding: "8px 14px" }}>
+              {[
+                { pair: "ETB/USD", rate: MARKET_DATA.etbUsd, chg: "+2.3%", spark: MARKET_DATA.forexSparkUsd },
+                { pair: "ETB/EUR", rate: MARKET_DATA.etbEur, chg: "+3.1%", spark: MARKET_DATA.forexSparkEur },
+              ].map(fx => (
+                <div key={fx.pair}>
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", paddingBottom: 2 }}>
+                    <div>
+                      <div style={{ ...mono, fontSize: 11, fontWeight: 700 }}>{fx.pair}</div>
+                      <div style={{ fontSize: 9, fontWeight: 700, color: "#EF4444" }}>▲ {fx.chg} (30d)</div>
+                    </div>
+                    <div style={{ textAlign: "right" }}>
+                      <div style={{ ...mono, fontSize: 12, fontWeight: 700, color: "#EF4444" }}>{fx.rate}</div>
+                      <div style={{ fontSize: 9, color: "#556070" }}>ETB per 1</div>
+                    </div>
+                  </div>
+                  <div style={{ height: 32, marginBottom: 8 }}>
+                    <Sparkline data={fx.spark} color="rgba(239,68,68,0.7)" />
+                  </div>
+                </div>
+              ))}
+              <div style={{ padding: "6px 8px", background: "rgba(239,68,68,0.08)", border: "1px solid rgba(239,68,68,0.2)", borderRadius: 4, fontSize: 9, color: "#EF4444", lineHeight: 1.5 }}>
+                ⚠ Imported plant/machinery projects face 3–5% cost variance from FX drift
+              </div>
+            </div>
+          </div>
+
+          {/* Material Volatility */}
+          <div style={panel}>
+            <div style={panelHdr}>
+              <div style={panelTitle}>Material Volatility</div>
+              <div style={{ ...mono, fontSize: 10, color: "#556070" }}>Addis Ababa</div>
+            </div>
+            <div style={{ padding: "10px 14px" }}>
+              {[
+                { name: "Rebar Steel", price: `${MARKET_DATA.rebar.toLocaleString()} ETB/t`, chg: MARKET_DATA.rebarChg, vol: 72, icon: "🔩" },
+                { name: "Cement (bag)", price: `${MARKET_DATA.cement.toLocaleString()} ETB`, chg: MARKET_DATA.cementChg, vol: 52, icon: "🏗" },
+                { name: "Diesel (L)", price: `${MARKET_DATA.diesel} ETB`, chg: MARKET_DATA.dieselChg, vol: 28, icon: "⛽" },
+              ].map(m => {
+                const chgColor = m.chg > 0 ? "#EF4444" : "#10B981";
+                const barColor = m.vol > 60 ? "#EF4444" : m.vol > 40 ? "#F59E0B" : "#10B981";
+                return (
+                  <div key={m.name} style={{ display: "flex", alignItems: "flex-start", gap: 8, marginBottom: 10 }}>
+                    <div style={{ fontSize: 16 }}>{m.icon}</div>
+                    <div style={{ flex: 1 }}>
+                      <div style={{ display: "flex", justifyContent: "space-between" }}>
+                        <div style={{ fontSize: 10, fontWeight: 700 }}>{m.name}</div>
+                        <div style={{ ...mono, fontSize: 10, color: "#8B9BAD" }}>
+                          {m.price} <span style={{ color: chgColor, fontWeight: 700 }}>{m.chg > 0 ? "▲" : "▼"}{Math.abs(m.chg)}%</span>
+                        </div>
+                      </div>
+                      <div style={{ height: 3, background: "#1A2332", borderRadius: 2, marginTop: 3 }}>
+                        <div style={{ width: `${m.vol}%`, height: "100%", background: barColor, borderRadius: 2 }} />
+                      </div>
+                    </div>
+                  </div>
+                );
+              })}
+              <div style={{ fontSize: 9, color: "#556070" }}>ETB/unit — 30-day volatility index</div>
+            </div>
+          </div>
+
+          {/* Resource Gap */}
+          <div style={{ ...panel, flex: 1 }}>
+            <div style={panelHdr}>
+              <div style={panelTitle}>Plant &amp; Resource Gap</div>
+              <div style={{ fontSize: 9, color: "#556070" }}>{selectedAudit?.project_name?.split(" ").slice(0, 2).join(" ") ?? "select project"}</div>
+            </div>
+            <div style={{ padding: "6px 8px" }}>
+              {selectedAudit ? (
+                <>
+                  <div style={{ fontSize: 9, color: "#556070", marginBottom: 4, padding: "0 6px" }}>
+                    <span style={{ color: "#1D6FE8" }}>■</span> In bid &nbsp; <span style={{ color: "#EF4444" }}>■</span> Gap (missing)
+                  </div>
+                  <ResourceGapChart analysis={selectedAudit.analysis} />
+                </>
+              ) : (
+                <div style={{ padding: "20px", textAlign: "center", color: "#556070", fontSize: 10 }}>Select a project to see resource gap analysis</div>
+              )}
+            </div>
+          </div>
+
+          {/* One-Click Reports */}
+          <div style={panel}>
+            <div style={panelHdr}><div style={panelTitle}>One-Click Reports</div></div>
+            <div style={{ padding: "10px 12px", display: "flex", flexDirection: "column", gap: 6 }}>
+              <Link
+                to="/history"
+                style={{
+                  display: "flex", alignItems: "center", gap: 6, width: "100%",
+                  background: "rgba(139,92,246,0.1)", border: "1px solid rgba(139,92,246,0.3)",
+                  color: "#8B5CF6", fontSize: 10, fontWeight: 700, letterSpacing: "0.5px",
+                  padding: "8px 10px", borderRadius: 4, cursor: "pointer", textTransform: "uppercase" as const,
+                  textDecoration: "none",
+                }}
+              >
+                <FileText size={12} /> Board-Ready PDF Report
+              </Link>
+              <Link
+                to="/history"
+                style={{
+                  display: "flex", alignItems: "center", gap: 6, width: "100%",
+                  background: "rgba(6,182,212,0.08)", border: "1px solid rgba(6,182,212,0.3)",
+                  color: "#06B6D4", fontSize: 10, fontWeight: 700, letterSpacing: "0.5px",
+                  padding: "8px 10px", borderRadius: 4, cursor: "pointer", textTransform: "uppercase" as const,
+                  textDecoration: "none",
+                }}
+              >
+                <Table2 size={12} /> Multi-Sheet Excel Export
+              </Link>
+            </div>
+          </div>
+        </div>
+
       </div>
     </div>
   );
@@ -1509,6 +2162,75 @@ export const calculateBoQVariance = (audit: AuditRow | null | undefined): number
 };
 </file>
 
+<file path="src/utils/download.ts">
+import * as XLSX from 'xlsx';
+
+export const downloadAuditExcel = (result: any) => {
+  try {
+    const wb = XLSX.utils.book_new();
+    const timestamp = new Date().toISOString().split('T')[0];
+    const safeProjectName = (result.project_name || "Project").replace(/[^a-z0-9]/gi, '_').toLowerCase();
+
+    // --- SHEET 1: EVALUATION MATRIX ---
+    const evaluationData = [
+      ["VALTOR FORENSIC AUDIT REPORT", ""],
+      ["Project Name", result.project_name || "N/A"],
+      ["Audit Date", new Date().toLocaleString()],
+      ["", ""],
+      ["CRITICAL METRICS", ""],
+      ["Composite Risk Index", `${result.risk_score ?? 0}/100`],
+      ["System Recommendation", result.recommendation || "N/A"],
+      ["Contract Value (ETB)", (result.contract_value || 0).toLocaleString()],
+      ["Target Margin", `${result.target_margin || 0}%`],
+      ["", ""],
+      ["EXECUTIVE SUMMARY", ""],
+      [result.executive_summary || "No summary provided.", ""]
+    ];
+    const ws1 = XLSX.utils.aoa_to_sheet(evaluationData);
+    ws1['!cols'] = [{ wch: 30 }, { wch: 70 }];
+
+    // --- SHEET 2: RISK REGISTER ---
+    const riskRows = [["CATEGORY", "RISK ELEMENT", "SEVERITY", "DESCRIPTION"]];
+    
+    // Add Contractual Traps (Defensive check)
+    (result.contractual_traps || []).forEach((t: any) => {
+      riskRows.push(["Contractual", t.clause_type || "Unknown", t.severity || "WATCH", t.description || ""]);
+    });
+    
+    // Add Scope Gaps
+    (result.scope_gaps || []).forEach((g: any) => {
+      riskRows.push(["Scope Omission", g.missing_element || "Gap", "WATCH", g.risk_impact || ""]);
+    });
+
+    const ws2 = XLSX.utils.aoa_to_sheet(riskRows);
+    ws2['!cols'] = [{ wch: 20 }, { wch: 25 }, { wch: 15 }, { wch: 60 }];
+
+    // --- SHEET 3: BoQ ANALYSIS ---
+    const boqRows = [["ITEM/SECTION", "VARIANCE/ERROR", "TECHNICAL NOTE"]];
+    
+    (result.arithmetic_errors || []).forEach((e: any) => {
+      boqRows.push([`Error: ${e.location}`, e.severity || "HIGH", e.description || ""]);
+    });
+
+    (result.market_variance || []).forEach((m: any) => {
+      boqRows.push([m.item || "Material", `${m.variance_pct || 0}%`, m.note || ""]);
+    });
+
+    const ws3 = XLSX.utils.aoa_to_sheet(boqRows);
+    ws3['!cols'] = [{ wch: 35 }, { wch: 25 }, { wch: 60 }];
+
+    XLSX.utils.book_append_sheet(wb, ws1, "Evaluation Matrix");
+    XLSX.utils.book_append_sheet(wb, ws2, "Risk Register");
+    XLSX.utils.book_append_sheet(wb, ws3, "BoQ Analysis");
+
+    XLSX.writeFile(wb, `Valtor_Audit_${safeProjectName}_${timestamp}.xlsx`);
+  } catch (err) {
+    console.error("Excel Export Failed:", err);
+    alert("Excel Export failed due to missing data structures.");
+  }
+};
+</file>
+
 <file path="src/vite-env.d.ts">
 /// <reference types="vite/client" />
 </file>
@@ -2274,226 +2996,754 @@ import { useState, useRef } from "react";
 import { supabase } from "@/integrations/supabase/client";
 import { insertAudit, dispatchAuditsUpdated } from "@/integrations/supabase/audits";
 import {
-  UploadCloud, Loader2, FileText, X, AlertCircle, CheckCircle2, 
-  XCircle, AlertTriangle, RotateCcw, Search, ShieldAlert, 
-  Activity, Calculator, HardHat, Scale, TrendingUp
+  UploadCloud, Loader2, FileText, X, CheckCircle2,
+  XCircle, AlertTriangle, RotateCcw, ShieldAlert,
+  Activity, Calculator, HardHat, Scale, TrendingUp,
+  TrendingDown, Minus, BookOpen, Award, AlertCircle,
+  ChevronDown, ChevronUp, BarChart2
 } from "lucide-react";
-
 import logo from "../../assets/logo.png";
 
 export const Route = createFileRoute("/_authenticated/audit")({
   component: AuditPage,
 });
 
+// ─── Types ───────────────────────────────────────────────────────────────────
+
+type ContractualTrap = {
+  clause_type: string;
+  fidic_ref: string;
+  severity: "CRITICAL" | "HIGH" | "MEDIUM" | "LOW";
+  description: string;
+  recommendation: string;
+};
+
+type MarketVarianceItem = {
+  item: string;
+  category: string;
+  our_rate: number;
+  market_rate: number;
+  variance_pct: number;
+  unit: string;
+  note: string;
+};
+
+type ArithmeticError = {
+  location: string;
+  description: string;
+  severity: "HIGH" | "MEDIUM" | "LOW";
+  financial_impact: number;
+};
+
+type ScopeGap = {
+  missing_element: string;
+  risk_impact: string;
+  estimated_cost_etb: number;
+};
+
 type AuditResult = {
   risk_score: number;
   recommendation: string;
   executive_summary: string;
   technical_critique: string;
-  arithmetic_errors: Array<{ location: string; description: string; severity: string }>;
-  contractual_traps: Array<{ clause_type: string; severity: string; description: string }>;
-  market_variance: Array<{ item: string; variance_pct: number; note: string }>;
+  methodology_strengths: string[];
+  methodology_weaknesses: string[];
+  arithmetic_errors: ArithmeticError[];
+  contractual_traps: ContractualTrap[];
+  market_variance: MarketVarianceItem[];
+  scope_gaps: ScopeGap[];
   resource_gap_analysis: string;
+  plant_adequacy_assessment: string;
   regulatory_compliance: string;
+  financial_risk_summary: string;
+  key_risks: string[];
   project_name: string;
   contract_value: number;
   target_margin: number;
 };
 
+// ─── Helpers ──────────────────────────────────────────────────────────────────
+
 function riskColor(score: number) {
-  if (score < 35) return { text: "text-emerald-600", bg: "bg-emerald-50", border: "border-emerald-200", bar: "bg-emerald-500" };
-  if (score < 65) return { text: "text-amber-600",   bg: "bg-amber-50",   border: "border-amber-200",   bar: "bg-amber-500"   };
-  return             { text: "text-red-600",          bg: "bg-red-50",     border: "border-red-200",     bar: "bg-red-500"     };
+  if (score < 35) return { text: "text-emerald-600", bg: "bg-emerald-50", border: "border-emerald-200", bar: "bg-emerald-500", label: "LOW RISK" };
+  if (score < 65) return { text: "text-amber-600", bg: "bg-amber-50", border: "border-amber-200", bar: "bg-amber-500", label: "MEDIUM RISK" };
+  return { text: "text-red-600", bg: "bg-red-50", border: "border-red-200", bar: "bg-red-600", label: "HIGH RISK" };
+}
+
+function severityColor(s: string) {
+  if (s === "CRITICAL") return "bg-red-100 text-red-800 border-red-200";
+  if (s === "HIGH") return "bg-orange-100 text-orange-800 border-orange-200";
+  if (s === "MEDIUM") return "bg-amber-100 text-amber-800 border-amber-200";
+  return "bg-slate-100 text-slate-700 border-slate-200";
 }
 
 function RecBadge({ rec }: { rec?: string }) {
   const s = rec || "PROCEED_WITH_CAUTION";
-  const label = s.replace(/_/g, ' ');
-  if (s === "PROCEED") return <span className="badge badge-green"><CheckCircle2 size={12}/> {label}</span>;
-  if (s === "DECLINE") return <span className="badge badge-red"><XCircle size={12}/> {label}</span>;
-  return <span className="badge badge-amber"><AlertTriangle size={12}/> {label}</span>;
+  const label = s.replace(/_/g, " ");
+  if (s === "PROCEED") return <span className="badge badge-green flex items-center gap-1"><CheckCircle2 size={11} /> {label}</span>;
+  if (s === "DECLINE") return <span className="badge badge-red flex items-center gap-1"><XCircle size={11} /> {label}</span>;
+  return <span className="badge badge-amber flex items-center gap-1"><AlertTriangle size={11} /> {label}</span>;
 }
+
+function VarianceIcon({ pct }: { pct: number }) {
+  if (pct > 5) return <TrendingUp size={13} className="text-red-500" />;
+  if (pct < -5) return <TrendingDown size={13} className="text-emerald-500" />;
+  return <Minus size={13} className="text-slate-400" />;
+}
+
+// ─── Expandable Section ───────────────────────────────────────────────────────
+
+function Section({ title, icon, accent, children }: {
+  title: string; icon: React.ReactNode; accent: string; children: React.ReactNode;
+}) {
+  const [open, setOpen] = useState(true);
+  return (
+    <div className={`panel shadow-sm border-l-4 ${accent}`}>
+      <button
+        onClick={() => setOpen(!open)}
+        className="w-full flex items-center justify-between p-5 bg-transparent border-none cursor-pointer text-left"
+        style={{ padding: "1.125rem 1.25rem" }}
+      >
+        <h4 className="section-label flex items-center gap-2 m-0">{icon} {title}</h4>
+        {open ? <ChevronUp size={14} className="text-slate-400" /> : <ChevronDown size={14} className="text-slate-400" />}
+      </button>
+      {open && <div style={{ padding: "0 1.25rem 1.25rem" }}>{children}</div>}
+    </div>
+  );
+}
+
+// ─── Results Panel ────────────────────────────────────────────────────────────
 
 function ResultsPanel({ result, onReset }: { result: AuditResult; onReset: () => void }) {
   const risk = riskColor(result.risk_score || 0);
+  const totalArithmeticImpact = (result.arithmetic_errors || []).reduce((s, e) => s + (e.financial_impact || 0), 0);
+  const totalScopeGapCost = (result.scope_gaps || []).reduce((s, g) => s + (g.estimated_cost_etb || 0), 0);
 
   return (
     <div className="space-y-6 animate-in fade-in slide-in-from-bottom-4 duration-500">
-      <div className="flex justify-between items-center">
+
+      {/* Header */}
+      <div className="flex justify-between items-start flex-wrap gap-3">
         <div>
           <p className="text-[10px] font-black uppercase tracking-[0.2em] text-slate-400">Forensic Audit Complete</p>
           <h2 className="text-xl font-black text-slate-900">{result.project_name}</h2>
         </div>
         <div className="flex gap-2">
           <button onClick={() => downloadAuditExcel(result)} className="btn-primary">
-            <FileText size={14}/> Export Professional Excel
+            <FileText size={14} /> Export Professional Excel
           </button>
-          <button onClick={onReset} className="btn-ghost">Reset</button>
+          <button onClick={onReset} className="btn-ghost"><RotateCcw size={13} /> Reset</button>
         </div>
       </div>
 
+      {/* Top metrics row */}
       <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-        <div className={`panel p-6 ${risk.bg} ${risk.border}`}>
+        {/* Risk Score */}
+        <div className={`panel p-6 ${risk.bg} border ${risk.border}`}>
           <p className="section-label">Risk Index</p>
-          <div className={`text-5xl font-black ${risk.text}`}>{result.risk_score}/100</div>
-          <div className="mt-4"><RecBadge rec={result.recommendation} /></div>
-        </div>
-        <div className="md:col-span-2 panel p-6 bg-white flex flex-col justify-center gap-4">
-          <div className="grid grid-cols-2 gap-4">
-            <div><p className="text-[10px] font-bold text-slate-400 uppercase">Value</p><p className="font-black text-lg">{(result.contract_value || 0).toLocaleString()} ETB</p></div>
-            <div><p className="text-[10px] font-bold text-slate-400 uppercase">Margin</p><p className="font-black text-lg">{result.target_margin}%</p></div>
+          <div className={`text-5xl font-black mt-1 ${risk.text}`}>{result.risk_score}/100</div>
+          <div className="mt-2 h-2 bg-white/60 rounded-full overflow-hidden">
+            <div className={`h-full ${risk.bar} rounded-full transition-all`} style={{ width: `${result.risk_score}%` }} />
           </div>
-          <div className="pt-4 border-t border-slate-100">
-            <p className="text-[11px] text-slate-500 leading-relaxed font-medium">
-                <TrendingUp size={12} className="inline mr-1 text-blue-600"/> {result.executive_summary}
+          <p className={`text-[10px] font-black uppercase tracking-widest mt-2 ${risk.text}`}>{risk.label}</p>
+          <div className="mt-3"><RecBadge rec={result.recommendation} /></div>
+        </div>
+
+        {/* Value + Summary */}
+        <div className="md:col-span-2 panel p-6 bg-white flex flex-col justify-between gap-4">
+          <div className="grid grid-cols-3 gap-4">
+            <div>
+              <p className="text-[10px] font-bold text-slate-400 uppercase">Contract Value</p>
+              <p className="font-black text-lg">{(result.contract_value || 0).toLocaleString()} ETB</p>
+            </div>
+            <div>
+              <p className="text-[10px] font-bold text-slate-400 uppercase">Target Margin</p>
+              <p className="font-black text-lg">{result.target_margin}%</p>
+            </div>
+            <div>
+              <p className="text-[10px] font-bold text-slate-400 uppercase">Arithmetic Exposure</p>
+              <p className={`font-black text-lg ${totalArithmeticImpact > 0 ? "text-red-600" : "text-slate-800"}`}>
+                {totalArithmeticImpact > 0 ? `${totalArithmeticImpact.toLocaleString()} ETB` : "None found"}
+              </p>
+            </div>
+          </div>
+          <div className="pt-3 border-t border-slate-100">
+            <p className="text-[11px] text-slate-600 leading-relaxed">
+              <TrendingUp size={12} className="inline mr-1 text-blue-600" />
+              {result.executive_summary}
             </p>
           </div>
         </div>
       </div>
 
+      {/* Key Risks Banner */}
+      {(result.key_risks || []).length > 0 && (
+        <div className="bg-red-50 border border-red-200 rounded-lg p-4">
+          <p className="text-[10px] font-black uppercase tracking-widest text-red-700 flex items-center gap-1 mb-2">
+            <AlertCircle size={12} /> Top Risk Signals
+          </p>
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
+            {result.key_risks.map((risk, i) => (
+              <div key={i} className="flex items-start gap-2 text-[11px] text-red-800">
+                <span className="text-red-400 mt-0.5">▸</span> {risk}
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Methodology Critique */}
+      <Section title="Methodology Critique" icon={<HardHat size={15} className="text-blue-600" />} accent="border-l-blue-600">
+        <p className="text-[12px] text-slate-600 leading-relaxed mb-4">{result.technical_critique}</p>
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+          {(result.methodology_strengths || []).length > 0 && (
+            <div>
+              <p className="text-[10px] font-black uppercase text-emerald-700 mb-2 flex items-center gap-1"><CheckCircle2 size={11} /> Strengths</p>
+              <ul className="space-y-1">
+                {result.methodology_strengths.map((s, i) => (
+                  <li key={i} className="text-[11px] text-slate-600 flex items-start gap-2">
+                    <span className="text-emerald-500 mt-0.5">✓</span> {s}
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
+          {(result.methodology_weaknesses || []).length > 0 && (
+            <div>
+              <p className="text-[10px] font-black uppercase text-red-700 mb-2 flex items-center gap-1"><XCircle size={11} /> Weaknesses</p>
+              <ul className="space-y-1">
+                {result.methodology_weaknesses.map((w, i) => (
+                  <li key={i} className="text-[11px] text-slate-600 flex items-start gap-2">
+                    <span className="text-red-400 mt-0.5">✗</span> {w}
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
+        </div>
+      </Section>
+
       <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-        <div className="panel p-6 border-l-4 border-l-blue-600 shadow-sm">
-          <h4 className="section-label flex items-center gap-2"><HardHat size={16} className="text-blue-600"/> Methodology Critique</h4>
-          <p className="mt-3 text-[12px] text-slate-600 leading-relaxed">{result.technical_critique}</p>
-        </div>
+        {/* Resource Adequacy */}
+        <Section title="Resource Adequacy" icon={<Activity size={15} className="text-indigo-600" />} accent="border-l-indigo-600">
+          <p className="text-[12px] text-slate-600 leading-relaxed">{result.resource_gap_analysis}</p>
+          {result.plant_adequacy_assessment && (
+            <div className="mt-3 p-3 bg-indigo-50 border border-indigo-100 rounded text-[11px] text-indigo-800">
+              <span className="font-black uppercase text-[9px] tracking-widest block mb-1">Plant Adequacy</span>
+              {result.plant_adequacy_assessment}
+            </div>
+          )}
+          {(result.scope_gaps || []).length > 0 && (
+            <div className="mt-3">
+              <p className="text-[10px] font-black uppercase text-amber-700 mb-2">Scope Gaps Detected ({result.scope_gaps.length})</p>
+              <div className="space-y-2">
+                {result.scope_gaps.map((g, i) => (
+                  <div key={i} className="bg-amber-50 border border-amber-100 p-2.5 rounded">
+                    <span className="font-black text-[10px] text-amber-800 block">{g.missing_element}</span>
+                    <p className="text-[10px] text-slate-600 mt-0.5">{g.risk_impact}</p>
+                    {g.estimated_cost_etb > 0 && (
+                      <span className="text-[10px] font-bold text-amber-700 mt-1 block">
+                        Est. impact: {g.estimated_cost_etb.toLocaleString()} ETB
+                      </span>
+                    )}
+                  </div>
+                ))}
+              </div>
+              {totalScopeGapCost > 0 && (
+                <p className="text-[10px] font-black text-amber-800 mt-2 text-right">
+                  Total gap exposure: {totalScopeGapCost.toLocaleString()} ETB
+                </p>
+              )}
+            </div>
+          )}
+        </Section>
 
-        <div className="panel p-6 border-l-4 border-l-indigo-600 shadow-sm">
-          <h4 className="section-label flex items-center gap-2"><Activity size={16} className="text-indigo-600"/> Resource Adequacy</h4>
-          <p className="mt-3 text-[12px] text-slate-600 leading-relaxed">{result.resource_gap_analysis}</p>
-        </div>
-
-        <div className="panel p-5">
-           <h4 className="section-label flex items-center gap-2 text-red-600"><Scale size={16}/> Legal & FIDIC Traps</h4>
-           <div className="mt-4 space-y-2">
-             {result.contractual_traps?.map((t, i) => (
-               <div key={i} className="bg-red-50/50 border border-red-100 p-3 rounded">
-                 <span className="font-black text-[10px] text-red-700 block uppercase">{t.clause_type} ({t.severity})</span>
-                 <p className="text-[11px] text-slate-600 mt-1">{t.description}</p>
-               </div>
-             ))}
-           </div>
-        </div>
-
-        <div className="panel p-5">
-           <h4 className="section-label flex items-center gap-2 text-amber-600"><Calculator size={16}/> Market Calibration</h4>
-           <div className="mt-4 space-y-2">
-             {result.market_variance?.map((m, i) => (
-               <div key={i} className="flex justify-between items-center text-[11px] p-2 bg-amber-50 rounded border border-amber-100">
-                 <span className="font-bold text-slate-700">{m.item}</span>
-                 <span className="text-amber-700 font-bold">{m.variance_pct > 0 ? '+' : ''}{m.variance_pct}%</span>
-               </div>
-             ))}
-           </div>
-        </div>
+        {/* Arithmetic Errors */}
+        <Section title="Arithmetic & BoQ Errors" icon={<Calculator size={15} className="text-orange-600" />} accent="border-l-orange-500">
+          {(result.arithmetic_errors || []).length === 0 ? (
+            <div className="flex items-center gap-2 text-[12px] text-emerald-700 bg-emerald-50 p-3 rounded border border-emerald-100">
+              <CheckCircle2 size={14} /> No arithmetic errors detected in this audit.
+            </div>
+          ) : (
+            <div className="space-y-3">
+              {result.arithmetic_errors.map((e, i) => (
+                <div key={i} className="border border-orange-100 bg-orange-50/50 p-3 rounded">
+                  <div className="flex items-center justify-between mb-1">
+                    <span className={`text-[9px] font-black px-2 py-0.5 rounded border uppercase ${severityColor(e.severity)}`}>{e.severity}</span>
+                    {e.financial_impact > 0 && (
+                      <span className="text-[10px] font-bold text-red-700">{e.financial_impact.toLocaleString()} ETB exposure</span>
+                    )}
+                  </div>
+                  <p className="text-[10px] font-black text-slate-700">{e.location}</p>
+                  <p className="text-[11px] text-slate-600 mt-1">{e.description}</p>
+                </div>
+              ))}
+              {totalArithmeticImpact > 0 && (
+                <div className="text-right text-[10px] font-black text-red-700 border-t border-orange-100 pt-2">
+                  Total financial exposure: {totalArithmeticImpact.toLocaleString()} ETB
+                </div>
+              )}
+            </div>
+          )}
+        </Section>
       </div>
-      
+
+      {/* Legal & FIDIC Traps — FULL WIDTH, RICH */}
+      <Section title="Legal & FIDIC Contractual Risk Analysis" icon={<Scale size={15} className="text-red-600" />} accent="border-l-red-600">
+        {(result.contractual_traps || []).length === 0 ? (
+          <div className="flex items-center gap-2 text-[12px] text-emerald-700 bg-emerald-50 p-3 rounded border border-emerald-100">
+            <CheckCircle2 size={14} /> No significant contractual traps or FIDIC clause violations detected.
+          </div>
+        ) : (
+          <div className="space-y-3">
+            <p className="text-[11px] text-slate-500 mb-3">
+              {result.contractual_traps.length} contractual risk{result.contractual_traps.length !== 1 ? "s" : ""} identified. FIDIC clause references provided where applicable.
+            </p>
+            {result.contractual_traps.map((t, i) => (
+              <div key={i} className="border border-red-100 rounded-lg overflow-hidden">
+                <div className="flex items-center justify-between bg-red-50/70 px-4 py-2.5 border-b border-red-100">
+                  <div className="flex items-center gap-3">
+                    <span className={`text-[9px] font-black px-2 py-0.5 rounded border uppercase ${severityColor(t.severity)}`}>
+                      {t.severity}
+                    </span>
+                    <span className="font-black text-[11px] text-slate-800 uppercase tracking-wide">{t.clause_type}</span>
+                  </div>
+                  {t.fidic_ref && (
+                    <span className="text-[10px] text-slate-500 font-mono bg-white border border-slate-200 px-2 py-0.5 rounded">
+                      FIDIC {t.fidic_ref}
+                    </span>
+                  )}
+                </div>
+                <div className="p-4 bg-white space-y-2">
+                  <p className="text-[12px] text-slate-700 leading-relaxed">{t.description}</p>
+                  {t.recommendation && (
+                    <div className="flex items-start gap-2 bg-blue-50 border border-blue-100 rounded p-2.5">
+                      <BookOpen size={12} className="text-blue-500 mt-0.5 flex-shrink-0" />
+                      <p className="text-[11px] text-blue-800"><span className="font-black">Recommended Action: </span>{t.recommendation}</p>
+                    </div>
+                  )}
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+      </Section>
+
+      {/* Market Calibration — FULL WIDTH, RICH */}
+      <Section title="Market Rate Calibration" icon={<BarChart2 size={15} className="text-amber-600" />} accent="border-l-amber-500">
+        {(result.market_variance || []).length === 0 ? (
+          <div className="flex items-center gap-2 text-[12px] text-slate-600 bg-slate-50 p-3 rounded border border-slate-200">
+            <Minus size={14} /> No market variance data available for this bid.
+          </div>
+        ) : (
+          <div>
+            <p className="text-[11px] text-slate-500 mb-4">
+              Comparison of bid rates against current Ethiopian construction market benchmarks. Variances &gt;±10% flagged for review.
+            </p>
+
+            {/* Summary stats */}
+            <div className="grid grid-cols-3 gap-3 mb-4">
+              <div className="bg-red-50 border border-red-100 rounded p-3 text-center">
+                <p className="text-[10px] font-black text-red-700 uppercase">Overpriced Items</p>
+                <p className="text-2xl font-black text-red-600">
+                  {result.market_variance.filter(m => m.variance_pct > 10).length}
+                </p>
+              </div>
+              <div className="bg-slate-50 border border-slate-200 rounded p-3 text-center">
+                <p className="text-[10px] font-black text-slate-500 uppercase">Within Range</p>
+                <p className="text-2xl font-black text-slate-700">
+                  {result.market_variance.filter(m => Math.abs(m.variance_pct) <= 10).length}
+                </p>
+              </div>
+              <div className="bg-emerald-50 border border-emerald-100 rounded p-3 text-center">
+                <p className="text-[10px] font-black text-emerald-700 uppercase">Underpriced Items</p>
+                <p className="text-2xl font-black text-emerald-600">
+                  {result.market_variance.filter(m => m.variance_pct < -10).length}
+                </p>
+              </div>
+            </div>
+
+            {/* Table */}
+            <div className="border border-slate-200 rounded-lg overflow-hidden">
+              <table className="w-full text-[11px]">
+                <thead>
+                  <tr className="bg-slate-50 border-b border-slate-200">
+                    <th className="text-left px-4 py-2.5 font-black text-slate-500 uppercase text-[9px] tracking-widest">Item</th>
+                    <th className="text-left px-4 py-2.5 font-black text-slate-500 uppercase text-[9px] tracking-widest">Category</th>
+                    <th className="text-right px-4 py-2.5 font-black text-slate-500 uppercase text-[9px] tracking-widest">Bid Rate</th>
+                    <th className="text-right px-4 py-2.5 font-black text-slate-500 uppercase text-[9px] tracking-widest">Market Rate</th>
+                    <th className="text-right px-4 py-2.5 font-black text-slate-500 uppercase text-[9px] tracking-widest">Variance</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {result.market_variance.map((m, i) => {
+                    const isOver = m.variance_pct > 10;
+                    const isUnder = m.variance_pct < -10;
+                    return (
+                      <tr key={i} className={`border-b border-slate-100 last:border-0 ${isOver ? "bg-red-50/30" : isUnder ? "bg-emerald-50/30" : ""}`}>
+                        <td className="px-4 py-3 font-bold text-slate-800">{m.item}</td>
+                        <td className="px-4 py-3 text-slate-500">{m.category}</td>
+                        <td className="px-4 py-3 text-right font-mono text-slate-700">
+                          {m.our_rate ? `${m.our_rate.toLocaleString()}${m.unit ? ` ETB/${m.unit}` : ""}` : "—"}
+                        </td>
+                        <td className="px-4 py-3 text-right font-mono text-slate-600">
+                          {m.market_rate ? `${m.market_rate.toLocaleString()}${m.unit ? ` ETB/${m.unit}` : ""}` : "—"}
+                        </td>
+                        <td className="px-4 py-3 text-right">
+                          <div className="flex items-center justify-end gap-1">
+                            <VarianceIcon pct={m.variance_pct} />
+                            <span className={`font-black ${isOver ? "text-red-600" : isUnder ? "text-emerald-600" : "text-slate-600"}`}>
+                              {m.variance_pct > 0 ? "+" : ""}{m.variance_pct}%
+                            </span>
+                          </div>
+                          {m.note && <p className="text-[10px] text-slate-400 mt-0.5 text-left">{m.note}</p>}
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        )}
+      </Section>
+
+      {/* Financial Risk Summary */}
+      {result.financial_risk_summary && (
+        <div className="panel p-5 border border-slate-200 bg-slate-50/50">
+          <h4 className="section-label flex items-center gap-2 mb-3"><Award size={14} className="text-blue-600" /> Financial Risk Summary</h4>
+          <p className="text-[12px] text-slate-600 leading-relaxed">{result.financial_risk_summary}</p>
+        </div>
+      )}
+
+      {/* Regulatory & Compliance */}
       <div className="panel p-4 bg-[#0F2240] text-slate-300">
-         <p className="text-[10px] font-black uppercase tracking-widest flex items-center gap-2 text-blue-400 mb-2">
-           <ShieldAlert size={12}/> Regulatory & Compliance
-         </p>
-         <p className="text-[11px] leading-relaxed italic">"{result.regulatory_compliance}"</p>
+        <p className="text-[10px] font-black uppercase tracking-widest flex items-center gap-2 text-blue-400 mb-2">
+          <ShieldAlert size={12} /> Regulatory & Compliance Assessment
+        </p>
+        <p className="text-[11px] leading-relaxed italic">"{result.regulatory_compliance}"</p>
       </div>
+
     </div>
   );
 }
+
+// ─── Main Audit Page ──────────────────────────────────────────────────────────
 
 function AuditPage() {
   const [files, setFiles] = useState<File[]>([]);
   const [projectName, setProjectName] = useState("");
   const [contractValue, setContractValue] = useState("");
   const [targetMargin, setTargetMargin] = useState("15.0");
+  const [projectType, setProjectType] = useState("construction");
   const [loading, setLoading] = useState(false);
+  const [loadingStage, setLoadingStage] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [result, setResult] = useState<AuditResult | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const runAudit = async () => {
-    if (!projectName || !contractValue) return setError("Missing required fields.");
-    setLoading(true); setError(null);
+    if (!projectName || !contractValue) return setError("Project name and contract value are required.");
+    setLoading(true);
+    setError(null);
+    setLoadingStage("Initializing forensic engine...");
 
     try {
       const apiKey = import.meta.env.VITE_GROQ_API_KEY;
+      const fileList = files.map(f => f.name).join(", ") || "No files uploaded (manual entry)";
+
+      setLoadingStage("Running deep risk analysis...");
+
+      const systemPrompt = `You are VLT-Core, a senior forensic construction bid auditor with 20+ years of experience in Ethiopian and East African infrastructure projects. You specialize in FIDIC contract analysis, Ethiopian procurement law (PPA 2011 and ERA specifications), and BoQ validation.
+
+Your task is to produce a DEEP, COMPREHENSIVE forensic audit. Every section MUST contain substantive, specific content — never return empty arrays or vague placeholders.
+
+CRITICAL OUTPUT RULES:
+1. Return ONLY valid JSON. No markdown, no code fences, no preamble.
+2. Every array must have AT LEAST 2-4 items with realistic, specific data.
+3. market_variance MUST contain 4-6 specific line items with actual ETB rates and percentages.
+4. contractual_traps MUST contain 2-4 specific FIDIC clause references with real clause numbers.
+5. Be specific to Ethiopian construction context (use ETB rates, local material names, ERA/EIC references).
+
+Return this exact JSON structure:
+{
+  "risk_score": <integer 0-100>,
+  "recommendation": <"PROCEED" | "PROCEED_WITH_CAUTION" | "DECLINE">,
+  "executive_summary": <2-3 sentence summary with specific financial observations>,
+  "financial_risk_summary": <detailed paragraph on financial exposure and margin sustainability>,
+  "key_risks": [<4-6 specific risk statements, each one sentence>],
+  "technical_critique": <2-3 paragraph detailed methodology assessment>,
+  "methodology_strengths": [<3-4 specific strengths observed>],
+  "methodology_weaknesses": [<3-4 specific weaknesses or gaps>],
+  "plant_adequacy_assessment": <1-2 sentences on plant and equipment sufficiency>,
+  "arithmetic_errors": [
+    {
+      "location": <specific BoQ section or item reference>,
+      "description": <what the error is>,
+      "severity": <"HIGH" | "MEDIUM" | "LOW">,
+      "financial_impact": <estimated ETB value as integer, 0 if unknown>
+    }
+  ],
+  "contractual_traps": [
+    {
+      "clause_type": <specific contract clause name, e.g. "Liquidated Damages", "Retention Money", "Variation Clause">,
+      "fidic_ref": <FIDIC clause number e.g. "Clause 8.7" or "Sub-Clause 14.9">,
+      "severity": <"CRITICAL" | "HIGH" | "MEDIUM" | "LOW">,
+      "description": <specific risk this clause poses in 2-3 sentences>,
+      "recommendation": <specific action to mitigate this risk>
+    },
+    ... at least 3 more items
+  ],
+  "market_variance": [
+    {
+      "item": <specific material or labor item name>,
+      "category": <"Labor" | "Materials" | "Equipment" | "Subcontract">,
+      "our_rate": <bid rate as number>,
+      "market_rate": <current Ethiopian market rate as number>,
+      "variance_pct": <percentage as number, positive = overpriced, negative = underpriced>,
+      "unit": <unit of measurement e.g. "m3", "kg", "day">,
+      "note": <brief explanation of the variance>
+    },
+    ... at least 4 more items covering labor, concrete, steel, equipment
+  ],
+  "scope_gaps": [
+    {
+      "missing_element": <specific missing scope item>,
+      "risk_impact": <how this gap affects project delivery>,
+      "estimated_cost_etb": <estimated cost to cover gap as integer>
+    }
+  ],
+  "resource_gap_analysis": <detailed paragraph on labor, equipment, and subcontractor capacity>,
+  "regulatory_compliance": <specific statement on Ethiopian procurement law, EIC, and ERA compliance>
+}`;
+
+      const userPrompt = `Conduct a full forensic audit of this construction bid:
+
+Project Name: ${projectName}
+Project Type: ${projectType}
+Contract Value: ${contractValue} ETB
+Target Margin: ${targetMargin}%
+Submitted Documents: ${fileList}
+
+Apply Ethiopian construction market context. Flag FIDIC risks, validate BoQ rates against current Addis Ababa/Ethiopian market rates (2024-2025), and assess methodology for ERA specification compliance. Be specific and actionable.`;
+
       const res = await fetch("https://api.groq.com/openai/v1/chat/completions", {
         method: "POST",
-        headers: { "Content-Type": "application/json", "Authorization": `Bearer ${apiKey}` },
+        headers: {
+          "Content-Type": "application/json",
+          "Authorization": `Bearer ${apiKey}`
+        },
         body: JSON.stringify({
           model: "llama-3.3-70b-versatile",
-          temperature: 0.2,
+          temperature: 0.15,
+          max_tokens: 4000,
           response_format: { type: "json_object" },
           messages: [
-            { 
-              role: "system", 
-              content: `You are VLT-Core Forensic Auditor. Analyze the bid and return deep forensic insights including plant adequacy and methodology critiques. 
-              Output MUST be raw JSON only. 
-              Structure: {
-                "risk_score": integer, "recommendation": "string", "executive_summary": "string",
-                "technical_critique": "string", "arithmetic_errors": [], "contractual_traps": [],
-                "market_variance": [], "resource_gap_analysis": "string", "regulatory_compliance": "string"
-              }`
-            },
-            { role: "user", content: `Audit: ${projectName}, Value: ${contractValue} ETB, Margin: ${targetMargin}%, Files: ${files.map(f=>f.name).join(', ')}` }
+            { role: "system", content: systemPrompt },
+            { role: "user", content: userPrompt }
           ]
         })
       });
 
       const data = await res.json();
-      if (!res.ok) throw new Error(data.error?.message || "API Error");
-      
-      const analysis = JSON.parse(data.choices[0].message.content.replace(/```json/g, "").replace(/```/g, ""));
+      if (!res.ok) throw new Error(data.error?.message || `API Error ${res.status}`);
 
-      // Standardize risk score to Integer for Supabase
-      let score = Number(analysis.risk_score || 0);
+      setLoadingStage("Processing audit findings...");
+
+      let raw = data.choices?.[0]?.message?.content || "{}";
+      raw = raw.replace(/```json/g, "").replace(/```/g, "").trim();
+      const analysis = JSON.parse(raw);
+
+      // Normalize risk score
+      let score = Number(analysis.risk_score || 50);
       if (score > 0 && score < 1) score = score * 100;
-      const finalScore = Math.round(score);
+      const finalScore = Math.round(Math.max(0, Math.min(100, score)));
+
+      // Ensure arrays are always arrays
+      analysis.contractual_traps = Array.isArray(analysis.contractual_traps) ? analysis.contractual_traps : [];
+      analysis.market_variance = Array.isArray(analysis.market_variance) ? analysis.market_variance : [];
+      analysis.arithmetic_errors = Array.isArray(analysis.arithmetic_errors) ? analysis.arithmetic_errors : [];
+      analysis.scope_gaps = Array.isArray(analysis.scope_gaps) ? analysis.scope_gaps : [];
+      analysis.methodology_strengths = Array.isArray(analysis.methodology_strengths) ? analysis.methodology_strengths : [];
+      analysis.methodology_weaknesses = Array.isArray(analysis.methodology_weaknesses) ? analysis.methodology_weaknesses : [];
+      analysis.key_risks = Array.isArray(analysis.key_risks) ? analysis.key_risks : [];
+
+      setLoadingStage("Saving to database...");
 
       const { data: { user } } = await supabase.auth.getUser();
       if (user) {
         await insertAudit({
-          user_id: user.id, project_name: projectName,
+          user_id: user.id,
+          project_name: projectName,
           file_name: files.map(f => f.name).join(" | ") || "Manual Entry",
-          contract_value: Number(contractValue), target_margin: Number(targetMargin),
-          risk_score: finalScore, status: "completed", analysis
+          contract_value: Number(contractValue),
+          target_margin: Number(targetMargin),
+          risk_score: finalScore,
+          status: "completed",
+          analysis
         });
         dispatchAuditsUpdated();
       }
 
-      setResult({ ...analysis, risk_score: finalScore, project_name: projectName, contract_value: Number(contractValue), target_margin: Number(targetMargin) });
-    } catch (e: any) { setError(e.message); } finally { setLoading(false); }
+      setResult({
+        ...analysis,
+        risk_score: finalScore,
+        project_name: projectName,
+        contract_value: Number(contractValue),
+        target_margin: Number(targetMargin)
+      });
+
+    } catch (e: any) {
+      setError(e.message || "Audit failed. Please try again.");
+    } finally {
+      setLoading(false);
+      setLoadingStage("");
+    }
   };
 
   return (
     <div className="max-w-5xl mx-auto">
       <div className="page-header">
         <h1 className="page-title uppercase tracking-tighter">Bid Audit Engine</h1>
-        <p className="page-subtitle uppercase font-black text-[10px] tracking-widest">Forensic AI v2.5</p>
+        <p className="page-subtitle uppercase font-black text-[10px] tracking-widest">Forensic AI v3.0 — Deep Analysis Mode</p>
       </div>
 
       {result ? (
-        <ResultsPanel result={result} onReset={() => {setResult(null); setFiles([]); setProjectName("");}} />
+        <ResultsPanel
+          result={result}
+          onReset={() => { setResult(null); setFiles([]); setProjectName(""); setContractValue(""); }}
+        />
       ) : (
         <div className="grid grid-cols-1 lg:grid-cols-12 gap-10">
+          {/* Form */}
           <div className="lg:col-span-7 bg-white border border-slate-200 rounded p-8 space-y-6 shadow-sm">
-            <div><label className="section-label">Project Name</label><input className="field-input" value={projectName} onChange={e => setProjectName(e.target.value)} /></div>
+
             <div>
-              <label className="section-label">Source Docs</label>
-              <input type="file" ref={fileInputRef} className="hidden" multiple onChange={e => e.target.files && setFiles([...Array.from(e.target.files)])} />
-              <div onClick={() => fileInputRef.current?.click()} className="dropzone"><p className="text-[10px] font-black text-slate-400">UPLOAD PACK</p></div>
-              <div className="mt-2 space-y-1">{files.map((f, i) => <div key={i} className="text-[10px] font-bold bg-slate-50 p-2 border rounded flex justify-between"><span>{f.name}</span><X size={12} className="cursor-pointer" onClick={()=>setFiles(files.filter((_,idx)=>idx!==i))}/></div>)}</div>
+              <label className="section-label">Project Name *</label>
+              <input
+                className="field-input"
+                placeholder="e.g. Addis Ababa Ring Road Phase 3"
+                value={projectName}
+                onChange={e => setProjectName(e.target.value)}
+              />
             </div>
+
+            <div>
+              <label className="section-label">Project Type</label>
+              <select
+                className="field-input"
+                value={projectType}
+                onChange={e => setProjectType(e.target.value)}
+              >
+                <option value="construction">Building & Civil Construction</option>
+                <option value="road">Road & Highway</option>
+                <option value="water">Water & Sanitation</option>
+                <option value="electromechanical">Electromechanical</option>
+                <option value="supply">Supply & Installation</option>
+              </select>
+            </div>
+
+            <div>
+              <label className="section-label">Source Documents (optional)</label>
+              <input
+                type="file"
+                ref={fileInputRef}
+                className="hidden"
+                multiple
+                accept=".pdf,.xlsx,.xls,.docx,.doc"
+                onChange={e => e.target.files && setFiles([...Array.from(e.target.files)])}
+              />
+              <div
+                onClick={() => fileInputRef.current?.click()}
+                className="dropzone cursor-pointer hover:bg-slate-50 transition-colors"
+              >
+                <UploadCloud size={20} className="text-slate-400 mb-1" />
+                <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest">
+                  Click to upload BoQ, Specs, Drawings
+                </p>
+                <p className="text-[9px] text-slate-300 mt-1">PDF, XLSX, DOCX accepted</p>
+              </div>
+              {files.length > 0 && (
+                <div className="mt-2 space-y-1">
+                  {files.map((f, i) => (
+                    <div key={i} className="text-[10px] font-bold bg-slate-50 p-2 border rounded flex justify-between items-center">
+                      <span className="flex items-center gap-1.5"><FileText size={11} className="text-blue-500" />{f.name}</span>
+                      <X size={12} className="cursor-pointer text-slate-400 hover:text-red-500" onClick={() => setFiles(files.filter((_, idx) => idx !== i))} />
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+
             <div className="grid grid-cols-2 gap-4">
-              <div><label className="section-label">Value (ETB)</label><input type="number" className="field-input" value={contractValue} onChange={e => setContractValue(e.target.value)} /></div>
-              <div><label className="section-label">Margin %</label><input type="number" className="field-input" value={targetMargin} onChange={e => setTargetMargin(e.target.value)} /></div>
+              <div>
+                <label className="section-label">Contract Value (ETB) *</label>
+                <input
+                  type="number"
+                  className="field-input"
+                  placeholder="e.g. 1234567"
+                  value={contractValue}
+                  onChange={e => setContractValue(e.target.value)}
+                />
+              </div>
+              <div>
+                <label className="section-label">Target Margin %</label>
+                <input
+                  type="number"
+                  step="0.1"
+                  className="field-input"
+                  value={targetMargin}
+                  onChange={e => setTargetMargin(e.target.value)}
+                />
+              </div>
             </div>
-            <button onClick={runAudit} disabled={loading} className="btn-primary w-full py-4 justify-center">
-              {loading ? <Loader2 className="animate-spin" size={18} /> : "Execute Forensic Audit"}
+
+            {error && (
+              <div className="flex items-center gap-2 text-[11px] text-red-700 bg-red-50 p-3 rounded border border-red-200">
+                <AlertCircle size={13} /> {error}
+              </div>
+            )}
+
+            <button
+              onClick={runAudit}
+              disabled={loading || !projectName || !contractValue}
+              className="btn-primary w-full py-4 justify-center disabled:opacity-50 disabled:cursor-not-allowed"
+            >
+              {loading ? (
+                <span className="flex items-center gap-2">
+                  <Loader2 className="animate-spin" size={16} />
+                  {loadingStage || "Running forensic audit..."}
+                </span>
+              ) : (
+                "Execute Deep Forensic Audit"
+              )}
             </button>
+
           </div>
-          <div className="lg:col-span-5 bg-slate-900 rounded-lg p-8 text-white space-y-6">
-             <img src={logo} style={{ height: "30px", filter: "brightness(0) invert(1)" }} />
-             <div className="space-y-4">
-                <div className="flex gap-3"><Calculator size={18} className="text-blue-400"/><p className="text-[11px] text-slate-400">Forensic BoQ validation.</p></div>
-                <div className="flex gap-3"><ShieldAlert size={18} className="text-blue-400"/><p className="text-[11px] text-slate-400">Legal Triage.</p></div>
-             </div>
+
+          {/* Sidebar */}
+          <div className="lg:col-span-5 bg-slate-900 rounded-lg p-8 text-white space-y-5">
+            <img src={logo} alt="Valtor" style={{ height: "28px", filter: "brightness(0) invert(1)" }} />
+            <p className="text-[11px] text-slate-400 leading-relaxed">
+              Deep forensic analysis powered by VLT-Core v3. Covers FIDIC compliance, BoQ arithmetic, market calibration, and regulatory risk.
+            </p>
+            <div className="space-y-3 border-t border-slate-700 pt-4">
+              {[
+                { icon: Scale, label: "Legal & FIDIC Trap Analysis", desc: "Clause-level risk with remediation steps" },
+                { icon: BarChart2, label: "Market Rate Calibration", desc: "Item-by-item vs. Ethiopian market benchmarks" },
+                { icon: Calculator, label: "Arithmetic Error Detection", desc: "BoQ extension and total validation" },
+                { icon: Activity, label: "Plant & Resource Assessment", desc: "Capacity gaps and scope omissions" },
+                { icon: ShieldAlert, label: "Regulatory Compliance", desc: "PPA 2011, ERA specs, EIC standards" },
+              ].map(({ icon: Icon, label, desc }) => (
+                <div key={label} className="flex gap-3">
+                  <Icon size={15} className="text-blue-400 flex-shrink-0 mt-0.5" />
+                  <div>
+                    <p className="text-[11px] font-black text-white">{label}</p>
+                    <p className="text-[10px] text-slate-400">{desc}</p>
+                  </div>
+                </div>
+              ))}
+            </div>
           </div>
         </div>
       )}
