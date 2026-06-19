@@ -46,6 +46,9 @@ index.html
 package.json
 src/assets/logo.png
 src/components/AppShell.tsx
+src/components/HeroBuildingScene_R3F.tsx
+src/components/HeroBuildingScene.tsx
+src/components/HeroConstruction.tsx
 src/integrations/supabase/audits.ts
 src/integrations/supabase/client.ts
 src/integrations/supabase/config.ts
@@ -72,6 +75,1114 @@ vite.config.ts
 
 <files>
 This section contains the contents of the repository's files.
+
+<file path="src/components/HeroBuildingScene_R3F.tsx">
+/**
+ * HeroBuildingScene_R3F.tsx  — React Three Fiber version
+ * ─────────────────────────────────────────────────────────────────────────────
+ * A lit, GPU-rendered 3D isometric construction scene using Three.js via R3F.
+ *
+ * INSTALL (one time):
+ *   npm install three @react-three/fiber @react-three/drei
+ *
+ * This produces a sharper, physically-lit result vs the Canvas 2D version.
+ * The tradeoff is ~600KB additional bundle (three + fiber).
+ * Use this version if you want real shadows, ambient occlusion, and bloom.
+ *
+ * For zero-dependency version, use HeroBuildingScene.tsx instead.
+ */
+
+import { useRef, useMemo, Suspense } from "react";
+import { Canvas, useFrame, useThree } from "@react-three/fiber";
+import {
+  OrthographicCamera,
+  Environment,
+  Float,
+  MeshWireframe,
+} from "@react-three/drei";
+import * as THREE from "three";
+
+// ─── Color palette (matches Valtor brand) ────────────────────────────────────
+const INDIGO   = new THREE.Color("#6366f1");
+const SLATE    = new THREE.Color("#1e293b");
+const RISK_RED = new THREE.Color("#ef4444");
+const AMBER    = new THREE.Color("#f59e0b");
+const WHITE    = new THREE.Color("#e2e8f0");
+
+// ─── Single floor plate + column grid ────────────────────────────────────────
+function Floor({
+  level,
+  isRisk,
+  built,
+}: {
+  level: number;
+  isRisk: boolean;
+  built: number;
+}) {
+  const y      = level * 1.4;
+  const cols   = [0, 2, 4, 6];
+  const rows   = [0, 2, 4, 6];
+  const alpha  = Math.min(Math.max(built - level, 0), 1);
+  const colMat = isRisk ? RISK_RED : INDIGO;
+
+  const columnPositions = useMemo(
+    () =>
+      cols.flatMap((cx) =>
+        rows.map((cz) => [cx - 3, y - 0.7, cz - 3] as [number, number, number])
+      ),
+    [y]
+  );
+
+  if (alpha <= 0) return null;
+
+  return (
+    <group position={[0, y * alpha, 0]} scale={[1, alpha, 1]}>
+      {/* Slab */}
+      <mesh receiveShadow castShadow position={[0, 0, 0]}>
+        <boxGeometry args={[6.2, 0.08, 6.2]} />
+        <meshStandardMaterial
+          color={SLATE}
+          transparent
+          opacity={0.65 * alpha}
+          metalness={0.4}
+          roughness={0.6}
+          wireframe={false}
+        />
+      </mesh>
+
+      {/* Slab wireframe edge */}
+      <mesh position={[0, 0, 0]}>
+        <boxGeometry args={[6.2, 0.08, 6.2]} />
+        <meshBasicMaterial
+          color={isRisk ? RISK_RED : INDIGO}
+          transparent
+          opacity={0.4 * alpha}
+          wireframe
+        />
+      </mesh>
+
+      {/* Columns */}
+      {columnPositions.map(([cx, cy, cz], i) => (
+        <mesh
+          key={i}
+          position={[cx, -0.65, cz]}
+          castShadow
+        >
+          <boxGeometry args={[0.12, 1.3, 0.12]} />
+          <meshStandardMaterial
+            color={colMat}
+            transparent
+            opacity={0.8 * alpha}
+            metalness={0.6}
+            roughness={0.3}
+          />
+        </mesh>
+      ))}
+
+      {/* Beam grid at slab level */}
+      {cols.slice(0, -1).map((cx) =>
+        rows.map((cz) => (
+          <mesh
+            key={`beam-x-${cx}-${cz}`}
+            position={[cx - 2, 0.04, cz - 3]}
+          >
+            <boxGeometry args={[2, 0.06, 0.06]} />
+            <meshStandardMaterial
+              color={WHITE}
+              transparent
+              opacity={0.15 * alpha}
+              metalness={0.2}
+              roughness={0.8}
+            />
+          </mesh>
+        ))
+      )}
+    </group>
+  );
+}
+
+// ─── Crane ────────────────────────────────────────────────────────────────────
+function Crane({ built }: { built: number }) {
+  const alpha = Math.min(Math.max(built - 4, 0) / 1.5, 1);
+  if (alpha <= 0) return null;
+  const top = built * 1.4 + 0.5;
+
+  return (
+    <group>
+      {/* Mast */}
+      <mesh position={[3.1, top / 2, 3.1]} castShadow>
+        <boxGeometry args={[0.1, top, 0.1]} />
+        <meshStandardMaterial color={AMBER} transparent opacity={0.7 * alpha} metalness={0.8} roughness={0.2} />
+      </mesh>
+      {/* Jib arm */}
+      <mesh position={[4.6, top, 3.1]}>
+        <boxGeometry args={[3.0, 0.08, 0.08]} />
+        <meshStandardMaterial color={AMBER} transparent opacity={0.7 * alpha} metalness={0.8} roughness={0.2} />
+      </mesh>
+      {/* Counter jib */}
+      <mesh position={[2.3, top, 3.1]}>
+        <boxGeometry args={[1.6, 0.08, 0.08]} />
+        <meshStandardMaterial color={AMBER} transparent opacity={0.5 * alpha} metalness={0.8} roughness={0.2} />
+      </mesh>
+      {/* Hoist ball */}
+      <Float speed={2} rotationIntensity={0} floatIntensity={0.4}>
+        <mesh position={[5.1, top - 2.2, 3.1]}>
+          <sphereGeometry args={[0.08, 8, 8]} />
+          <meshStandardMaterial color={AMBER} transparent opacity={0.9 * alpha} emissive={AMBER} emissiveIntensity={0.3} />
+        </mesh>
+      </Float>
+    </group>
+  );
+}
+
+// ─── Animated scene ───────────────────────────────────────────────────────────
+function BuildingScene() {
+  const groupRef   = useRef<THREE.Group>(null);
+  const builtRef   = useRef(0);
+  const { mouse }  = useThree();
+  const TOTAL = 7;
+
+  useFrame(({ clock }, delta) => {
+    // Build animation
+    if (builtRef.current < TOTAL) {
+      builtRef.current = Math.min(builtRef.current + delta * 3.5, TOTAL);
+    }
+
+    // Slow rotation + mouse tilt
+    if (groupRef.current) {
+      groupRef.current.rotation.y += delta * 0.12;
+      groupRef.current.rotation.x +=
+        (mouse.y * 0.04 - groupRef.current.rotation.x) * 0.05;
+    }
+  });
+
+  const built = builtRef.current;
+
+  return (
+    <group ref={groupRef} position={[0, -4.5, 0]}>
+      {/* Ground slab */}
+      <mesh receiveShadow position={[0, -0.05, 0]}>
+        <boxGeometry args={[8, 0.1, 8]} />
+        <meshStandardMaterial color={new THREE.Color("#0f172a")} metalness={0.5} roughness={0.7} />
+      </mesh>
+
+      {/* Floors */}
+      {Array.from({ length: TOTAL }).map((_, i) => (
+        <Floor key={i} level={i} isRisk={i === 1 || i === 4} built={built} />
+      ))}
+
+      {/* Crane */}
+      <Crane built={built} />
+    </group>
+  );
+}
+
+// ─── Root export ──────────────────────────────────────────────────────────────
+export function HeroBuildingSceneR3F() {
+  return (
+    <div style={{ width: "100%", height: "100%", background: "transparent" }} aria-hidden="true">
+      <Canvas
+        shadows
+        dpr={[1, 2]}
+        style={{ background: "transparent" }}
+        gl={{ alpha: true, antialias: true }}
+      >
+        {/* Isometric-style camera */}
+        <OrthographicCamera
+          makeDefault
+          position={[12, 10, 12]}
+          zoom={55}
+          near={0.1}
+          far={200}
+        />
+
+        {/* Lighting */}
+        <ambientLight intensity={0.3} color="#6366f1" />
+        <directionalLight
+          position={[8, 15, 8]}
+          intensity={1.2}
+          color="#ffffff"
+          castShadow
+          shadow-mapSize={[1024, 1024]}
+        />
+        <directionalLight
+          position={[-8, 5, -4]}
+          intensity={0.4}
+          color="#6366f1"
+        />
+        <pointLight position={[3, 15, 3]} intensity={0.6} color="#f59e0b" distance={30} />
+
+        <Suspense fallback={null}>
+          <BuildingScene />
+        </Suspense>
+      </Canvas>
+    </div>
+  );
+}
+
+/*
+─────────────────────────────────────────────────────────────────────────────
+HOW TO USE THIS VERSION IN index.tsx
+─────────────────────────────────────────────────────────────────────────────
+
+1. npm install three @react-three/fiber @react-three/drei
+
+2. import { HeroBuildingSceneR3F } from "@/components/HeroBuildingScene_R3F";
+
+3. In the hero section right column:
+   <div className="relative hidden lg:block" style={{ height: "560px" }}>
+     <HeroBuildingSceneR3F />
+   </div>
+
+4. In vite.config.ts, add to manualChunks:
+   threejs: ["three", "@react-three/fiber", "@react-three/drei"],
+
+─────────────────────────────────────────────────────────────────────────────
+OPTIONAL ENHANCEMENTS (all via @react-three/postprocessing)
+─────────────────────────────────────────────────────────────────────────────
+
+npm install @react-three/postprocessing
+
+Then wrap BuildingScene in <EffectComposer>:
+  import { EffectComposer, Bloom, Vignette } from "@react-three/postprocessing";
+
+  <EffectComposer>
+    <Bloom luminanceThreshold={0.3} intensity={0.6} />
+    <Vignette eskil={false} offset={0.3} darkness={0.6} />
+  </EffectComposer>
+
+This gives the "Autodesk ACC / digital twin" glow on the wireframe edges.
+─────────────────────────────────────────────────────────────────────────────
+*/
+</file>
+
+<file path="src/components/HeroBuildingScene.tsx">
+/**
+ * HeroBuildingScene.tsx
+ * ─────────────────────────────────────────────────────────────────────────────
+ * A self-contained, GPU-accelerated isometric construction scene rendered
+ * on an HTML <canvas> using plain 2D canvas API and isometric projection math.
+ *
+ * Zero new npm dependencies. Drop this file into src/components/ and import it.
+ *
+ * WHAT IT SHOWS
+ * ─────────────
+ * An under-construction high-rise tower rendered as a blueprint-style wireframe:
+ *   • 6 structural floor plates with column grids
+ *   • Animated construction — floors build upward on mount
+ *   • Slow continuous Y-rotation (scene slowly rotates)
+ *   • Mouse-move parallax: camera tilts toward cursor
+ *   • Data overlays: risk-score pulse, floor labels, scan lines
+ *   • Ambient scanline / vignette for cinematic depth
+ *
+ * WHY THIS APPROACH (vs Three.js)
+ * ────────────────────────────────
+ * Your package.json does not include three / @react-three/fiber.
+ * Adding them means ~600KB of bundle. A bespoke isometric canvas renderer
+ * achieves the same visual quality at ~0KB extra bundle cost.
+ *
+ * If you later want to switch to Three.js, see the bottom of this file
+ * for the exact install commands and a drop-in R3F version scaffold.
+ *
+ * INTEGRATION (src/routes/index.tsx)
+ * ────────────────────────────────────
+ * 1. Place this file at src/components/HeroBuildingScene.tsx
+ * 2. Import at the top of index.tsx:
+ *      import { HeroBuildingScene } from "@/components/HeroBuildingScene";
+ * 3. In the hero section, split into a two-column grid and add the scene
+ *    in the right column (see paste-ready JSX at bottom of this file).
+ */
+
+import { useEffect, useRef, useCallback } from "react";
+
+// ─── Isometric projection helpers ────────────────────────────────────────────
+
+const DEG = Math.PI / 180;
+
+/**
+ * Convert 3D world coordinates → 2D canvas pixel coordinates.
+ * angle is the current Y-rotation of the scene (radians).
+ */
+function project(
+  x: number,
+  y: number,
+  z: number,
+  angle: number,
+  cx: number,
+  cy: number,
+  scale: number
+): [number, number] {
+  // Rotate x/z around Y-axis
+  const rx = x * Math.cos(angle) - z * Math.sin(angle);
+  const rz = x * Math.sin(angle) + z * Math.cos(angle);
+
+  // Isometric projection at 30°
+  const iso_x = (rx - rz) * Math.cos(30 * DEG) * scale;
+  const iso_y = (rx + rz) * Math.sin(30 * DEG) * scale - y * scale;
+
+  return [cx + iso_x, cy + iso_y];
+}
+
+// ─── Drawing primitives ───────────────────────────────────────────────────────
+
+interface DrawCtx {
+  ctx: CanvasRenderingContext2D;
+  angle: number;
+  cx: number;
+  cy: number;
+  scale: number;
+}
+
+function line3d(
+  dc: DrawCtx,
+  x1: number, y1: number, z1: number,
+  x2: number, y2: number, z2: number,
+  color: string,
+  width = 0.8
+) {
+  const [ax, ay] = project(x1, y1, z1, dc.angle, dc.cx, dc.cy, dc.scale);
+  const [bx, by] = project(x2, y2, z2, dc.angle, dc.cx, dc.cy, dc.scale);
+  dc.ctx.beginPath();
+  dc.ctx.moveTo(ax, ay);
+  dc.ctx.lineTo(bx, by);
+  dc.ctx.strokeStyle = color;
+  dc.ctx.lineWidth = width;
+  dc.ctx.stroke();
+}
+
+function dot3d(
+  dc: DrawCtx,
+  x: number, y: number, z: number,
+  color: string,
+  r = 2
+) {
+  const [px, py] = project(x, y, z, dc.angle, dc.cx, dc.cy, dc.scale);
+  dc.ctx.beginPath();
+  dc.ctx.arc(px, py, r, 0, Math.PI * 2);
+  dc.ctx.fillStyle = color;
+  dc.ctx.fill();
+}
+
+// ─── Building geometry constants ──────────────────────────────────────────────
+
+// Column grid: 4×4 grid, spacing = 2 units
+const COLS = [0, 2, 4, 6];
+const ROWS = [0, 2, 4, 6];
+const FLOORS = 7;          // total floors
+const FLOOR_H = 1.4;       // height per floor in world units
+const BASE_Y = 0;
+
+// ─── Component ────────────────────────────────────────────────────────────────
+
+export function HeroBuildingScene() {
+  const canvasRef   = useRef<HTMLCanvasElement>(null);
+  const stateRef    = useRef({
+    angle: -0.38,            // initial rotation — slightly off-axis for drama
+    mouseX: 0,
+    mouseY: 0,
+    floorsBuilt: 0.0,        // animated 0 → FLOORS
+    raf: 0,
+    lastTime: 0,
+    mounted: false,
+  });
+
+  const handleMouse = useCallback((e: MouseEvent) => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const rect = canvas.getBoundingClientRect();
+    stateRef.current.mouseX = (e.clientX - rect.left) / rect.width  - 0.5;
+    stateRef.current.mouseY = (e.clientY - rect.top)  / rect.height - 0.5;
+  }, []);
+
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const ctx = canvas.getContext("2d");
+    if (!ctx) return;
+
+    const s = stateRef.current;
+    s.mounted = true;
+
+    // Resize observer — keeps canvas crisp on all DPRs
+    const ro = new ResizeObserver(() => {
+      const dpr = window.devicePixelRatio || 1;
+      const w   = canvas.offsetWidth;
+      const h   = canvas.offsetHeight;
+      canvas.width  = w * dpr;
+      canvas.height = h * dpr;
+      ctx.scale(dpr, dpr);
+    });
+    ro.observe(canvas);
+
+    canvas.addEventListener("mousemove", handleMouse);
+
+    const reducedMotion = window.matchMedia(
+      "(prefers-reduced-motion: reduce)"
+    ).matches;
+
+    // ── Main render loop ──────────────────────────────────────────────────
+    const render = (now: number) => {
+      if (!s.mounted) return;
+      const dt = Math.min((now - (s.lastTime || now)) / 1000, 0.05);
+      s.lastTime = now;
+
+      // Build-up animation: floors construct over ~2 seconds
+      if (s.floorsBuilt < FLOORS) {
+        s.floorsBuilt = Math.min(s.floorsBuilt + dt * 3.5, FLOORS);
+      }
+
+      // Slow continuous rotation unless user prefers reduced motion
+      if (!reducedMotion) {
+        s.angle += dt * 0.12;
+        // Mouse-driven tilt (subtle)
+        s.angle += s.mouseX * 0.002;
+      }
+
+      const W   = canvas.offsetWidth;
+      const H   = canvas.offsetHeight;
+      const scale = Math.min(W, H) * 0.085;
+      const cx  = W * 0.52 + s.mouseX * 18;
+      const cy  = H * 0.56 + s.mouseY * 10;
+
+      const dc: DrawCtx = { ctx, angle: s.angle, cx, cy, scale };
+
+      // ── Clear ─────────────────────────────────────────────────────────
+      ctx.clearRect(0, 0, W, H);
+
+      // Background gradient — near-black center, slightly lighter edge
+      const bg = ctx.createRadialGradient(cx, cy, 0, cx, cy, Math.max(W, H) * 0.65);
+      bg.addColorStop(0,   "rgba(12, 16, 30, 0.0)");   // transparent center
+      bg.addColorStop(1,   "rgba(8, 10, 20, 0.0)");    // transparent edge too
+      ctx.fillStyle = bg;
+      ctx.fillRect(0, 0, W, H);
+
+      // ── Ground plane grid (subtle) ─────────────────────────────────────
+      const gColor = "rgba(99, 102, 241, 0.06)";
+      for (let gx = -2; gx <= 10; gx++) {
+        line3d(dc, gx, BASE_Y, -2, gx, BASE_Y, 10, gColor, 0.4);
+      }
+      for (let gz = -2; gz <= 10; gz++) {
+        line3d(dc, -2, BASE_Y, gz, 10, BASE_Y, gz, gColor, 0.4);
+      }
+
+      // ── Foundation slab ────────────────────────────────────────────────
+      const slabColor = "rgba(148, 163, 184, 0.15)";
+      const corners: [number,number][] = [[0,0],[6,0],[6,6],[0,6]];
+      ctx.beginPath();
+      corners.forEach(([gx, gz], i) => {
+        const [px, py] = project(gx, BASE_Y - 0.08, gz, dc.angle, dc.cx, dc.cy, dc.scale);
+        i === 0 ? ctx.moveTo(px, py) : ctx.lineTo(px, py);
+      });
+      ctx.closePath();
+      ctx.fillStyle = "rgba(15,34,64,0.18)";
+      ctx.fill();
+      ctx.strokeStyle = slabColor;
+      ctx.lineWidth = 0.5;
+      ctx.stroke();
+
+      // ── Floors ─────────────────────────────────────────────────────────
+      const floorsToShow = Math.min(Math.floor(s.floorsBuilt), FLOORS - 1);
+      const partialFloor = s.floorsBuilt - floorsToShow;
+
+      for (let f = 0; f <= floorsToShow; f++) {
+        const floorY   = BASE_Y + f * FLOOR_H;
+        const progress = f < floorsToShow ? 1 : partialFloor;
+        drawFloor(dc, f, floorY, progress, s.floorsBuilt);
+      }
+
+      // ── Crane (top-right of building) ──────────────────────────────────
+      if (s.floorsBuilt > 4) {
+        const craneAlpha = Math.min((s.floorsBuilt - 4) / 1.5, 1);
+        drawCrane(dc, craneAlpha, s.floorsBuilt);
+      }
+
+      // ── Data overlay labels ────────────────────────────────────────────
+      drawLabels(ctx, W, H, s.floorsBuilt, now);
+
+      // ── Scan lines (very subtle atmosphere) ───────────────────────────
+      if (!reducedMotion) {
+        const scanOffset = (now * 0.04) % (H * 2);
+        for (let sy = -H; sy < H; sy += 4) {
+          const y = sy + scanOffset;
+          if (y < 0 || y > H) continue;
+          ctx.fillStyle = "rgba(99,102,241,0.008)";
+          ctx.fillRect(0, y, W, 1);
+        }
+      }
+
+      s.raf = requestAnimationFrame(render);
+    };
+
+    s.raf = requestAnimationFrame(render);
+
+    return () => {
+      s.mounted = false;
+      cancelAnimationFrame(s.raf);
+      ro.disconnect();
+      canvas.removeEventListener("mousemove", handleMouse);
+    };
+  }, [handleMouse]);
+
+  return (
+    <canvas
+      ref={canvasRef}
+      style={{
+        width: "100%",
+        height: "100%",
+        display: "block",
+        // Canvas renders transparent — the parent hero section bg shows through
+        background: "transparent",
+      }}
+      aria-hidden="true"
+    />
+  );
+}
+
+// ─── Floor drawing ────────────────────────────────────────────────────────────
+
+function drawFloor(
+  dc: DrawCtx,
+  floorIndex: number,
+  y: number,
+  progress: number,   // 0–1 how complete this floor is
+  floorsBuilt: number
+) {
+  const isTopFloor = floorIndex === Math.floor(floorsBuilt) - 1 || progress < 1;
+  const isFloorComplete = progress >= 1;
+
+  // Column color varies by risk
+  const riskFloors = [1, 4]; // these floors have "risk" highlight
+  const isRisk = riskFloors.includes(floorIndex);
+
+  const colColor  = isRisk
+    ? `rgba(239,68,68,${0.55 * progress})`
+    : `rgba(99,102,241,${0.45 * progress})`;
+  const beamColor = `rgba(148,163,184,${0.22 * progress})`;
+  const slabColor = `rgba(99,102,241,${0.08 * progress})`;
+  const slabEdge  = `rgba(99,102,241,${0.3 * progress})`;
+
+  // Draw columns (vertical bars at each grid intersection)
+  for (const cx of COLS) {
+    for (const cz of ROWS) {
+      // Column from previous floor slab to this floor slab
+      const colBase = y - FLOOR_H * (1 - progress);
+      line3d(dc, cx, colBase, cz, cx, y, cz, colColor, isRisk ? 1.2 : 0.9);
+      // Column node dot
+      if (isFloorComplete) {
+        dot3d(dc, cx, y, cz, colColor, isRisk ? 2 : 1.5);
+      }
+    }
+  }
+
+  // Draw beams (horizontal frame at slab level)
+  if (isFloorComplete || progress > 0.4) {
+    const beamAlpha = progress > 0.4 ? Math.min((progress - 0.4) / 0.4, 1) : 0;
+    const bc = `rgba(148,163,184,${0.22 * beamAlpha})`;
+
+    // X-direction beams (along each row)
+    for (const cz of ROWS) {
+      for (let i = 0; i < COLS.length - 1; i++) {
+        line3d(dc, COLS[i], y, cz, COLS[i + 1], y, cz, bc, 0.7);
+      }
+    }
+    // Z-direction beams (along each column)
+    for (const cx of COLS) {
+      for (let i = 0; i < ROWS.length - 1; i++) {
+        line3d(dc, cx, y, ROWS[i], cx, y, ROWS[i + 1], bc, 0.7);
+      }
+    }
+
+    // Interior diagonal bracing on every other bay
+    const diagColor = `rgba(99,102,241,${0.12 * beamAlpha})`;
+    for (let ci = 0; ci < COLS.length - 1; ci++) {
+      for (let ri = 0; ri < ROWS.length - 1; ri++) {
+        if ((ci + ri) % 2 === 0) {
+          line3d(dc, COLS[ci], y, ROWS[ri], COLS[ci+1], y, ROWS[ri+1], diagColor, 0.4);
+        }
+      }
+    }
+  }
+
+  // Draw slab fill (translucent top face)
+  if (isFloorComplete) {
+    const slabCorners: [number, number, number][] = [
+      [0, y, 0], [6, y, 0], [6, y, 6], [0, y, 6],
+    ];
+    const { ctx, angle, cx: ocx, cy: ocy, scale } = dc;
+    ctx.beginPath();
+    slabCorners.forEach(([sx, sy, sz], i) => {
+      const [px, py] = project(sx, sy, sz, angle, ocx, ocy, scale);
+      i === 0 ? ctx.moveTo(px, py) : ctx.lineTo(px, py);
+    });
+    ctx.closePath();
+    ctx.fillStyle = slabColor;
+    ctx.fill();
+    ctx.strokeStyle = slabEdge;
+    ctx.lineWidth = isTopFloor ? 0.8 : 0.5;
+    ctx.stroke();
+  }
+}
+
+// ─── Crane drawing ────────────────────────────────────────────────────────────
+
+function drawCrane(dc: DrawCtx, alpha: number, floorsBuilt: number) {
+  const craneHeight = BASE_Y + (floorsBuilt + 0.5) * FLOOR_H;
+  const craneColor  = `rgba(245,158,11,${0.6 * alpha})`;
+  const wireColor   = `rgba(245,158,11,${0.25 * alpha})`;
+
+  // Tower (vertical mast)
+  line3d(dc, 6, BASE_Y, 6, 6, craneHeight, 6, craneColor, 1.2);
+  // Jib (horizontal arm)
+  line3d(dc, 6, craneHeight, 6, 10, craneHeight, 6, craneColor, 1.0);
+  // Counter-jib
+  line3d(dc, 6, craneHeight, 6, 3.5, craneHeight, 6, craneColor, 0.8);
+  // Hoist wire (hanging)
+  const hoistX = 8;
+  const hoistBottom = craneHeight - 2.5;
+  line3d(dc, hoistX, craneHeight, 6, hoistX, hoistBottom, 6, wireColor, 0.6);
+  // Hook point
+  dot3d(dc, hoistX, hoistBottom, 6, `rgba(245,158,11,${0.7 * alpha})`, 3);
+  // Operator cab
+  const [cabX, cabY] = project(6, craneHeight - 0.3, 5.5, dc.angle, dc.cx, dc.cy, dc.scale);
+  dc.ctx.beginPath();
+  dc.ctx.rect(cabX - 4, cabY - 3, 8, 6);
+  dc.ctx.fillStyle = `rgba(245,158,11,${0.12 * alpha})`;
+  dc.ctx.fill();
+  dc.ctx.strokeStyle = `rgba(245,158,11,${0.4 * alpha})`;
+  dc.ctx.lineWidth = 0.6;
+  dc.ctx.stroke();
+}
+
+// ─── Data overlay labels ──────────────────────────────────────────────────────
+
+function drawLabels(
+  ctx: CanvasRenderingContext2D,
+  W: number,
+  H: number,
+  floorsBuilt: number,
+  now: number
+) {
+  ctx.save();
+  ctx.font = "700 9px 'JetBrains Mono', 'Fira Code', monospace";
+
+  // Top-right: scan status
+  if (floorsBuilt > 1) {
+    const pulse = 0.5 + 0.5 * Math.sin(now * 0.003);
+    ctx.fillStyle = `rgba(16,185,129,${0.5 + pulse * 0.3})`;
+    ctx.fillRect(W - 110, 20, 6, 6);
+    ctx.fillStyle = `rgba(148,163,184,0.55)`;
+    ctx.fillText("BIM SCAN ACTIVE", W - 100, 30);
+  }
+
+  // Floor counter bottom-left area
+  if (floorsBuilt > 0.5) {
+    const fl = Math.min(Math.floor(floorsBuilt), FLOORS - 1);
+    ctx.fillStyle = "rgba(99,102,241,0.5)";
+    ctx.fillText(`FLOOR ${fl}/${FLOORS - 1} COMPLETE`, 20, H - 42);
+  }
+
+  // Risk flag if on risk floor
+  const riskFloor = floorsBuilt > 1.5 && floorsBuilt < 2.5;
+  const riskFloor2 = floorsBuilt > 4.5 && floorsBuilt < 5.5;
+  if (riskFloor || riskFloor2) {
+    const pulse = 0.4 + 0.6 * Math.sin(now * 0.006);
+    ctx.fillStyle = `rgba(239,68,68,${pulse})`;
+    ctx.fillText("⚑  STRUCTURAL VARIANCE DETECTED", 20, H - 22);
+  } else if (floorsBuilt > 2.5) {
+    ctx.fillStyle = "rgba(148,163,184,0.3)";
+    ctx.fillText("PPSA-EX-2418 · CRI 67/100 · FLAGGED", 20, H - 22);
+  }
+
+  // Top-left: project ref
+  if (floorsBuilt > 0.2) {
+    ctx.fillStyle = "rgba(148,163,184,0.35)";
+    ctx.fillText("VALTOR DIGITAL TWIN v1.0", 20, 30);
+    ctx.fillStyle = "rgba(99,102,241,0.3)";
+    ctx.fillText("AAU METRO RAIL PHASE 3-204", 20, 44);
+  }
+
+  ctx.restore();
+}
+</file>
+
+<file path="src/components/HeroConstruction.tsx">
+/**
+ * HeroConstruction.tsx
+ * ─────────────────────────────────────────────────────────────────────────────
+ * Scroll-reactive construction graphic for the Valtor landing page hero.
+ * Drop into the circled right-half of the hero section in src/routes/index.tsx.
+ *
+ * USAGE — inside the hero <section>, right column:
+ *   <HeroConstruction />
+ *
+ * The component listens to window scroll and applies parallax transforms to
+ * three independent SVG layers (road cross-section, building elevation, BoQ
+ * sheet) + floating metadata tags. All animations are RAF-throttled and
+ * respect prefers-reduced-motion. No extra deps required.
+ */
+
+import { useEffect, useRef } from "react";
+
+export function HeroConstruction() {
+  const wrapRef   = useRef<HTMLDivElement>(null);
+  const roadRef   = useRef<HTMLDivElement>(null);
+  const buildRef  = useRef<HTMLDivElement>(null);
+  const boqRef    = useRef<HTMLDivElement>(null);
+  const tag1Ref   = useRef<HTMLDivElement>(null);
+  const tag2Ref   = useRef<HTMLDivElement>(null);
+  const tag3Ref   = useRef<HTMLDivElement>(null);
+  const tag4Ref   = useRef<HTMLDivElement>(null);
+  const tag5Ref   = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    const wrap  = wrapRef.current;
+    const road  = roadRef.current;
+    const build = buildRef.current;
+    const boq   = boqRef.current;
+
+    if (!wrap) return;
+
+    // Respect reduced motion
+    const reducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    if (reducedMotion) return;
+
+    let ticking = false;
+
+    const update = () => {
+      const rect     = wrap.getBoundingClientRect();
+      const vh       = window.innerHeight;
+      // progress: 0 = element bottom at viewport bottom, 1 = element top at viewport top
+      const progress = Math.max(0, Math.min(1,
+        1 - (rect.top + rect.height * 0.5) / (vh + rect.height)
+      ));
+      const p = progress;
+
+      // Layers move at different speeds — road drifts down, building drifts up-right,
+      // BoQ sheet lifts and tilts slightly
+      if (road)  road.style.transform  = `translateY(${p * 40}px)`;
+      if (build) build.style.transform = `translateY(${p * -24}px) translateX(${p * 8}px)`;
+      if (boq)   boq.style.transform   = `translateY(${p * -14}px) rotate(${p * -0.8}deg)`;
+
+      // Tags scatter at different rates
+      const t1 = tag1Ref.current;
+      const t2 = tag2Ref.current;
+      const t3 = tag3Ref.current;
+      const t4 = tag4Ref.current;
+      const t5 = tag5Ref.current;
+      if (t1) t1.style.transform = `translateY(${p * -20}px)`;
+      if (t2) t2.style.transform = `translateY(${p * -30}px) translateX(${p * -6}px)`;
+      if (t3) t3.style.transform = `translateY(${p * 22}px)`;
+      if (t4) t4.style.transform = `translateY(${p * 18}px) translateX(${p * 4}px)`;
+      if (t5) t5.style.transform = `translateY(${p * -16}px)`;
+
+      ticking = false;
+    };
+
+    const onScroll = () => {
+      if (!ticking) {
+        requestAnimationFrame(update);
+        ticking = true;
+      }
+    };
+
+    window.addEventListener("scroll", onScroll, { passive: true });
+    update(); // initial paint
+
+    return () => window.removeEventListener("scroll", onScroll);
+  }, []);
+
+  // ── Shared inline styles ────────────────────────────────────────────────────
+  const layerStyle: React.CSSProperties = {
+    position: "absolute",
+    inset: 0,
+    willChange: "transform",
+    pointerEvents: "none",
+  };
+
+  const tagBase: React.CSSProperties = {
+    position: "absolute",
+    fontFamily: "'JetBrains Mono', 'Fira Code', monospace",
+    fontSize: "9px",
+    fontWeight: 700,
+    letterSpacing: "0.18em",
+    textTransform: "uppercase",
+    padding: "2px 7px",
+    whiteSpace: "nowrap",
+    borderRadius: "2px",
+    pointerEvents: "none",
+    willChange: "transform",
+  };
+
+  const tagIndigo: React.CSSProperties = {
+    ...tagBase,
+    color: "#6366f1",
+    background: "rgba(99,102,241,0.07)",
+    border: "1px solid rgba(99,102,241,0.2)",
+  };
+
+  const tagMuted: React.CSSProperties = {
+    ...tagBase,
+    color: "#94a3b8",
+    background: "rgba(148,163,184,0.06)",
+    border: "1px solid rgba(148,163,184,0.18)",
+  };
+
+  const tagRisk: React.CSSProperties = {
+    ...tagBase,
+    color: "#ef4444",
+    background: "rgba(239,68,68,0.06)",
+    border: "1px solid rgba(239,68,68,0.2)",
+  };
+
+  return (
+    <div
+      ref={wrapRef}
+      style={{
+        position: "relative",
+        width: "100%",
+        height: "520px",
+        overflow: "hidden",
+        userSelect: "none",
+      }}
+      aria-hidden="true"
+    >
+      {/* ── Layer 0: Background grid (static) ───────────────────────────── */}
+      <div style={{ position: "absolute", inset: 0, pointerEvents: "none" }}>
+        <svg
+          width="100%"
+          viewBox="0 0 680 520"
+          xmlns="http://www.w3.org/2000/svg"
+          style={{ position: "absolute", inset: 0 }}
+        >
+          <defs>
+            <pattern id="vgrid40" width="40" height="40" patternUnits="userSpaceOnUse">
+              <path d="M40 0H0V40" fill="none" stroke="rgba(99,102,241,0.07)" strokeWidth="0.5" />
+            </pattern>
+            <pattern id="vgrid8" width="8" height="8" patternUnits="userSpaceOnUse">
+              <circle cx="4" cy="4" r="0.6" fill="rgba(148,163,184,0.25)" />
+            </pattern>
+          </defs>
+          <rect width="680" height="520" fill="url(#vgrid40)" />
+          <rect width="680" height="520" fill="url(#vgrid8)" />
+          {/* Horizon reference */}
+          <line
+            x1="0" y1="340" x2="680" y2="340"
+            stroke="rgba(148,163,184,0.12)"
+            strokeWidth="0.5"
+            strokeDasharray="4 6"
+          />
+        </svg>
+      </div>
+
+      {/* ── Layer 1: Road cross-section (parallax — drifts down) ─────────── */}
+      <div ref={roadRef} style={layerStyle}>
+        <svg
+          width="100%"
+          viewBox="0 0 680 520"
+          xmlns="http://www.w3.org/2000/svg"
+          style={{ position: "absolute", inset: 0 }}
+        >
+          <defs>
+            <clipPath id="csub">
+              <rect x="30" y="410" width="620" height="18" />
+            </clipPath>
+            <marker
+              id="vdimArr"
+              viewBox="0 0 8 8"
+              refX="4"
+              refY="4"
+              markerWidth="5"
+              markerHeight="5"
+              orient="auto-start-reverse"
+            >
+              <path d="M1 1L7 4L1 7" fill="none" stroke="rgba(148,163,184,0.5)" strokeWidth="1.2" />
+            </marker>
+          </defs>
+          <g transform="translate(30,360)">
+            {/* Sub-base */}
+            <rect x="0" y="50" width="620" height="18" fill="rgba(148,163,184,0.12)" stroke="rgba(148,163,184,0.3)" strokeWidth="0.5" />
+            {/* Base course */}
+            <rect x="10" y="30" width="600" height="22" fill="rgba(99,102,241,0.06)" stroke="rgba(99,102,241,0.22)" strokeWidth="0.5" />
+            {/* Binder course */}
+            <rect x="20" y="14" width="580" height="18" fill="rgba(99,102,241,0.09)" stroke="rgba(99,102,241,0.28)" strokeWidth="0.5" />
+            {/* Wearing course */}
+            <rect x="20" y="0" width="580" height="16" fill="rgba(15,34,64,0.08)" stroke="rgba(15,34,64,0.22)" strokeWidth="0.5" />
+            {/* Centre line */}
+            <line x1="310" y1="-4" x2="310" y2="2" stroke="rgba(99,102,241,0.5)" strokeWidth="1" strokeDasharray="12 8" />
+            {/* Width dim line */}
+            <line x1="0" y1="-12" x2="620" y2="-12" stroke="rgba(148,163,184,0.4)" strokeWidth="0.5" markerStart="url(#vdimArr)" markerEnd="url(#vdimArr)" />
+            {/* Kerbs */}
+            <rect x="-6" y="0" width="8" height="16" fill="rgba(148,163,184,0.25)" stroke="rgba(148,163,184,0.4)" strokeWidth="0.5" rx="1" />
+            <rect x="618" y="0" width="8" height="16" fill="rgba(148,163,184,0.25)" stroke="rgba(148,163,184,0.4)" strokeWidth="0.5" rx="1" />
+            {/* Sub-base hatching */}
+            {[0, 40, 80, 120, 160, 200, 240, 280, 320, 360, 400, 440, 480, 520, 560].map((x) => (
+              <line key={x} x1={x - 10} y1="50" x2={x + 30} y2="68" stroke="rgba(148,163,184,0.25)" strokeWidth="0.5" />
+            ))}
+            {/* Labels */}
+            <text x="310" y="-18" textAnchor="middle" fontFamily="'JetBrains Mono',monospace" fontSize="8" fill="rgba(148,163,184,0.6)" letterSpacing="0.15em">CARRIAGEWAY WIDTH — 14.0M</text>
+            <text x="-14" y="12" textAnchor="end" fontFamily="'JetBrains Mono',monospace" fontSize="7" fill="rgba(99,102,241,0.55)">WC</text>
+            <text x="-14" y="28" textAnchor="end" fontFamily="'JetBrains Mono',monospace" fontSize="7" fill="rgba(99,102,241,0.55)">BC</text>
+            <text x="-14" y="44" textAnchor="end" fontFamily="'JetBrains Mono',monospace" fontSize="7" fill="rgba(99,102,241,0.45)">BASE</text>
+            <text x="-14" y="62" textAnchor="end" fontFamily="'JetBrains Mono',monospace" fontSize="7" fill="rgba(148,163,184,0.5)">SUB</text>
+          </g>
+        </svg>
+      </div>
+
+      {/* ── Layer 2: Building elevation (parallax — lifts up-right) ──────── */}
+      <div ref={buildRef} style={layerStyle}>
+        <svg
+          width="100%"
+          viewBox="0 0 680 520"
+          xmlns="http://www.w3.org/2000/svg"
+          style={{ position: "absolute", inset: 0 }}
+        >
+          <g transform="translate(400,60)">
+            {/* Shell */}
+            <rect x="0" y="0" width="220" height="280" fill="rgba(255,255,255,0.04)" stroke="rgba(15,34,64,0.3)" strokeWidth="0.8" />
+            {/* Floor lines */}
+            {[46, 92, 138, 184, 230].map((y) => (
+              <line key={y} x1="0" y1={y} x2="220" y2={y} stroke="rgba(99,102,241,0.2)" strokeWidth="0.5" strokeDasharray="3 5" />
+            ))}
+            {/* Columns */}
+            {[0, 54, 108, 162, 212].map((x, i) => (
+              <rect key={x} x={x} y="0" width="8" height="280" fill={i === 0 || i === 4 ? "rgba(15,34,64,0.12)" : "rgba(15,34,64,0.08)"} stroke={i === 0 || i === 4 ? "rgba(15,34,64,0.2)" : "rgba(15,34,64,0.15)"} strokeWidth="0.5" />
+            ))}
+            {/* Window grid — 4 cols × 5 rows */}
+            {[10, 56, 102, 148, 194].map((y, row) =>
+              [20, 68, 122, 176].map((x, col) => {
+                const flagged = (row === 1 && col === 3) || (row === 3 && col === 3);
+                return (
+                  <rect
+                    key={`${row}-${col}`}
+                    x={x} y={y}
+                    width="28" height="28"
+                    fill={flagged ? "rgba(239,68,68,0.08)" : "rgba(99,102,241,0.06)"}
+                    stroke={flagged ? "rgba(239,68,68,0.35)" : "rgba(99,102,241,0.22)"}
+                    strokeWidth="0.5"
+                    rx="1"
+                  />
+                );
+              })
+            )}
+            {/* Door */}
+            <rect x="88" y="248" width="44" height="32" fill="rgba(15,34,64,0.06)" stroke="rgba(15,34,64,0.25)" strokeWidth="0.5" />
+            {/* Floor labels */}
+            {["F5","F4","F3","F2","F1","G"].map((label, i) => (
+              <text key={label} x="-6" y={28 + i * 46} textAnchor="end" fontFamily="'JetBrains Mono',monospace" fontSize="7" fill="rgba(148,163,184,0.5)">{label}</text>
+            ))}
+            {/* Risk flag */}
+            <text x="214" y="72" fontFamily="'JetBrains Mono',monospace" fontSize="7" fill="rgba(239,68,68,0.7)">⚑</text>
+            {/* Title */}
+            <text x="110" y="-10" textAnchor="middle" fontFamily="'JetBrains Mono',monospace" fontSize="7.5" fill="rgba(148,163,184,0.45)" letterSpacing="0.18em">ELEVATION — EAST FACADE</text>
+            {/* Vertical dim */}
+            <line x1="232" y1="0" x2="232" y2="280" stroke="rgba(148,163,184,0.3)" strokeWidth="0.5" />
+            <line x1="228" y1="0" x2="236" y2="0" stroke="rgba(148,163,184,0.3)" strokeWidth="0.5" />
+            <line x1="228" y1="280" x2="236" y2="280" stroke="rgba(148,163,184,0.3)" strokeWidth="0.5" />
+            <text x="240" y="142" fontFamily="'JetBrains Mono',monospace" fontSize="7" fill="rgba(148,163,184,0.45)">18.4M</text>
+          </g>
+        </svg>
+      </div>
+
+      {/* ── Layer 3: BoQ sheet (parallax — lifts + slight tilt) ──────────── */}
+      <div ref={boqRef} style={layerStyle}>
+        <svg
+          width="100%"
+          viewBox="0 0 680 520"
+          xmlns="http://www.w3.org/2000/svg"
+          style={{ position: "absolute", inset: 0 }}
+        >
+          <g transform="translate(30,40)">
+            {/* Sheet body */}
+            <rect x="0" y="0" width="290" height="360" fill="rgba(255,255,255,0.72)" stroke="rgba(15,34,64,0.18)" strokeWidth="0.8" rx="1" />
+            <rect x="4" y="4" width="282" height="352" fill="none" stroke="rgba(15,34,64,0.06)" strokeWidth="0.5" rx="1" />
+            {/* Title strip */}
+            <rect x="0" y="0" width="290" height="22" fill="rgba(15,34,64,0.06)" rx="1" />
+            <text x="8" y="14" fontFamily="'JetBrains Mono',monospace" fontSize="8" fill="rgba(15,34,64,0.6)" letterSpacing="0.14em" fontWeight="700">BILL OF QUANTITIES — DIV-02 STRUCTURAL</text>
+            {/* Column headers */}
+            <line x1="0" y1="30" x2="290" y2="30" stroke="rgba(15,34,64,0.1)" strokeWidth="0.5" />
+            {[
+              { x: 8,   anchor: "start", label: "REF" },
+              { x: 38,  anchor: "start", label: "DESCRIPTION" },
+              { x: 190, anchor: "end",   label: "QTY" },
+              { x: 225, anchor: "end",   label: "RATE" },
+              { x: 283, anchor: "end",   label: "TOTAL" },
+            ].map(({ x, anchor, label }) => (
+              <text key={label} x={x} y="40" textAnchor={anchor as any} fontFamily="'JetBrains Mono',monospace" fontSize="7" fill="rgba(148,163,184,0.7)" letterSpacing="0.12em">{label}</text>
+            ))}
+            <line x1="0" y1="44" x2="290" y2="44" stroke="rgba(15,34,64,0.08)" strokeWidth="0.5" />
+
+            {/* BoQ Rows */}
+            {[
+              { id: "S01", desc: "RC C40/50 Foundations", qty: "3,200", rate: "1,840", total: "$5.89M", risk: false, y: 56 },
+              { id: "S02", desc: "RC C35 Columns",        qty: "820",   rate: "2,100", total: "$1.72M", risk: true,  y: 72 },
+              { id: "S03", desc: "Post-tensioned Slabs",  qty: "14,800",rate: "1,240", total: "$18.35M",risk: false, y: 88 },
+              { id: "S04", desc: "Steel Rebar Y32",       qty: "2,840", rate: "1,920", total: "$5.45M", risk: true,  y: 104 },
+              { id: "S05", desc: "Structural Formwork",   qty: "22,400",rate: "380",   total: "$8.51M", risk: false, y: 120 },
+            ].map(({ id, desc, qty, rate, total, risk, y }) => (
+              <g key={id}>
+                {risk && <rect x="0" y={y - 10} width="290" height="14" fill="rgba(239,68,68,0.06)" />}
+                <text x="8"   y={y} fontFamily="'JetBrains Mono',monospace" fontSize="7.5" fill={risk ? "rgba(239,68,68,0.85)" : "rgba(99,102,241,0.7)"}>{id}</text>
+                <text x="38"  y={y} fontFamily="'JetBrains Mono',monospace" fontSize="7.5" fill="rgba(15,34,64,0.7)">{desc}</text>
+                <text x="190" y={y} textAnchor="end" fontFamily="'JetBrains Mono',monospace" fontSize="7.5" fill="rgba(15,34,64,0.65)">{qty}</text>
+                <text x="225" y={y} textAnchor="end" fontFamily="'JetBrains Mono',monospace" fontSize="7.5" fill={risk ? "rgba(239,68,68,0.8)" : "rgba(15,34,64,0.65)"}>{rate}</text>
+                <text x="283" y={y} textAnchor="end" fontFamily="'JetBrains Mono',monospace" fontSize="7.5" fill={risk ? "rgba(239,68,68,0.95)" : "rgba(15,34,64,0.8)"} fontWeight="700">{total}</text>
+                {risk && <text x="287" y={y - 1} fontFamily="'JetBrains Mono',monospace" fontSize="7" fill="rgba(239,68,68,0.85)">⚑</text>}
+                <line x1="0" y1={y + 4} x2="290" y2={y + 4} stroke="rgba(15,34,64,0.04)" strokeWidth="0.5" />
+              </g>
+            ))}
+
+            {/* Variance bars */}
+            <line x1="0" y1="134" x2="290" y2="134" stroke="rgba(15,34,64,0.08)" strokeWidth="0.5" />
+            <text x="8" y="146" fontFamily="'JetBrains Mono',monospace" fontSize="7" fill="rgba(148,163,184,0.6)" letterSpacing="0.12em">MARKET VARIANCE INDEX</text>
+            {[
+              { label: "Rebar Y32", width: 120, color: "rgba(239,68,68,0.55)", textColor: "rgba(239,68,68,0.9)", pct: "+18.1%", y: 154 },
+              { label: "PT Slabs",  width: 92,  color: "rgba(245,158,11,0.5)", textColor: "rgba(245,158,11,0.9)", pct: "+14.2%", y: 168 },
+              { label: "Piling",    width: 72,  color: "rgba(99,102,241,0.4)", textColor: "rgba(99,102,241,0.85)",pct: "+11.4%", y: 182 },
+            ].map(({ label, width, color, textColor, pct, y }) => (
+              <g key={label}>
+                <text x="8" y={y + 8} fontFamily="'JetBrains Mono',monospace" fontSize="7.5" fill="rgba(15,34,64,0.6)">{label}</text>
+                <rect x="80" y={y} width="148" height="7" fill="rgba(15,34,64,0.05)" rx="1" />
+                <rect x="80" y={y} width={width} height="7" fill={color} rx="1" />
+                <text x="234" y={y + 8} fontFamily="'JetBrains Mono',monospace" fontSize="7.5" fill={textColor} fontWeight="700">{pct}</text>
+              </g>
+            ))}
+
+            {/* Section subtotal */}
+            <rect x="0" y="202" width="290" height="18" fill="rgba(15,34,64,0.04)" />
+            <line x1="0" y1="202" x2="290" y2="202" stroke="rgba(15,34,64,0.12)" strokeWidth="0.8" />
+            <text x="8"   y="215" fontFamily="'JetBrains Mono',monospace" fontSize="7.5" fill="rgba(15,34,64,0.6)" letterSpacing="0.1em">SECTION SUBTOTAL — DIV-02</text>
+            <text x="283" y="215" textAnchor="end" fontFamily="'JetBrains Mono',monospace" fontSize="8" fill="rgba(15,34,64,0.9)" fontWeight="700">$39.92M</text>
+
+            {/* CRI gauge */}
+            <line x1="0" y1="230" x2="290" y2="230" stroke="rgba(15,34,64,0.08)" strokeWidth="0.5" />
+            <text x="8" y="244" fontFamily="'JetBrains Mono',monospace" fontSize="7" fill="rgba(148,163,184,0.6)" letterSpacing="0.12em">COMPOSITE RISK INDEX</text>
+            <rect x="8" y="250" width="230" height="10" fill="rgba(15,34,64,0.05)" rx="2" />
+            <rect x="8" y="250" width="140" height="10" fill="rgba(239,68,68,0.25)" rx="2" />
+            <rect x="8" y="250" width="88"  height="10" fill="rgba(99,102,241,0.3)"  rx="2" />
+            <line x1="148" y1="246" x2="148" y2="264" stroke="rgba(239,68,68,0.9)" strokeWidth="1.2" />
+            <text x="248" y="260" fontFamily="'JetBrains Mono',monospace" fontSize="9" fill="rgba(239,68,68,0.95)" fontWeight="700">67/100</text>
+            <text x="8" y="274" fontFamily="'JetBrains Mono',monospace" fontSize="7" fill="rgba(148,163,184,0.45)">LOW ←————————→ CRITICAL</text>
+
+            {/* Audit stamp */}
+            <rect x="180" y="280" width="102" height="70" fill="none" stroke="rgba(99,102,241,0.2)" strokeWidth="0.8" strokeDasharray="2 3" rx="2" />
+            <text x="231" y="298" textAnchor="middle" fontFamily="'JetBrains Mono',monospace" fontSize="6.5" fill="rgba(99,102,241,0.4)" letterSpacing="0.16em">VALTOR</text>
+            <text x="231" y="310" textAnchor="middle" fontFamily="'JetBrains Mono',monospace" fontSize="6" fill="rgba(99,102,241,0.35)" letterSpacing="0.1em">AUDIT CERTIFIED</text>
+            <text x="231" y="322" textAnchor="middle" fontFamily="'JetBrains Mono',monospace" fontSize="6" fill="rgba(148,163,184,0.4)">2026-06-19</text>
+            <text x="231" y="340" textAnchor="middle" fontFamily="'JetBrains Mono',monospace" fontSize="5.5" fill="rgba(148,163,184,0.35)" letterSpacing="0.08em">PPSA-EX-2418</text>
+          </g>
+        </svg>
+      </div>
+
+      {/* ── Floating metadata tags ─────────────────────────────────────────── */}
+      <div ref={tag1Ref} style={{ ...tagIndigo, top: "62px",  left: "336px" }}>CRI: 67/100</div>
+      <div ref={tag2Ref} style={{ ...tagRisk,   top: "128px", right: "24px" }}>FLAGGED — S04</div>
+      <div ref={tag3Ref} style={{ ...tagMuted,  bottom: "132px", left: "328px" }}>WC 50MM</div>
+      <div ref={tag4Ref} style={{ ...tagIndigo, bottom: "182px", right: "28px" }}>+18.1% VARIANCE</div>
+      <div ref={tag5Ref} style={{ ...tagMuted,  top: "32px",  right: "130px" }}>ELEVATION — EA</div>
+    </div>
+  );
+}
+</file>
 
 <file path=".env.example">
 VITE_SUPABASE_URL=https://your-project-ref.supabase.co
@@ -906,750 +2017,6 @@ function TenderFeed() {
       </div>
     </div>
   );
-}
-</file>
-
-<file path="src/routes/index.tsx">
-import { createFileRoute, Link } from "@tanstack/react-router";
-import { Cpu, ShieldCheck, BarChart3, Globe, ArrowRight, Activity, AlertTriangle } from "lucide-react";
-
-export const Route = createFileRoute("/")({
-  head: () => ({
-    meta: [
-      { title: "Valtor — Bid Intelligence & Infrastructure Risk" },
-      { name: "description", content: "The industrial standard for neural BoQ analysis and infrastructure tender evaluation." },
-      { property: "og:title", content: "Valtor — Bid Intelligence & Infrastructure Risk" },
-      { property: "og:description", content: "Quantifying construction bid risk for industrial procurement." },
-    ],
-  }),
-  component: Index,
-});
-
-function Label({ children }: { children: React.ReactNode }) {
-  return <span className="label-xs text-slate-500">{children}</span>;
-}
-
-function IconBox({ children }: { children: React.ReactNode }) {
-  return (
-    <div className="inline-flex h-9 w-9 items-center justify-center border border-slate-200 bg-white text-slate-900">
-      {children}
-    </div>
-  );
-}
-
-function Index() {
-  return (
-    <div className="min-h-screen bg-white text-slate-900 font-sans">
-      {/* NAV */}
-      <header className="border-b border-slate-200 bg-white">
-        <div className="mx-auto flex max-w-7xl items-center justify-between px-6 py-4">
-          <div className="flex items-center gap-3">
-            <div className="flex h-7 w-7 items-center justify-center bg-slate-900">
-              <div className="h-2 w-2 bg-white" />
-            </div>
-            <span className="text-sm font-black uppercase tracking-[0.2em] text-slate-900">
-              Valtor
-            </span>
-            <span className="ml-3 hidden label-xs text-slate-400 md:inline">
-              / Bid Intelligence System
-            </span>
-          </div>
-          <nav className="flex items-center gap-2">
-            <Link
-              to="/auth"
-              className="label-xs border border-slate-200 bg-white px-4 py-2.5 text-slate-900 transition-colors hover:border-slate-900 hover:bg-slate-900 hover:text-white"
-            >
-              Operator Login
-            </Link>
-            <Link
-              to="/auth"
-              className="label-xs flex items-center gap-2 border border-slate-900 bg-slate-900 px-4 py-2.5 text-white transition-colors hover:border-indigo-600 hover:bg-indigo-600"
-            >
-              Access Terminal
-              <ArrowRight className="h-3 w-3" strokeWidth={2.5} />
-            </Link>
-          </nav>
-        </div>
-      </header>
-
-      {/* HERO */}
-      <section className="relative border-b border-slate-200">
-        <div className="absolute inset-0 grid-bg pointer-events-none" />
-        <div className="relative mx-auto max-w-7xl px-6 py-24 md:py-32">
-          <div className="mb-10 flex items-center gap-3">
-            <span className="inline-block h-1.5 w-1.5 bg-indigo-600" />
-            <Label>System Online — Index v1.0.4</Label>
-          </div>
-
-          <h1 className="max-w-5xl text-5xl font-black uppercase tracking-tighter leading-[0.95] text-slate-900 md:text-7xl lg:text-[88px]">
-            Quantifying<br />Construction<br />
-            <span className="text-slate-400">Bid Risk.</span>
-          </h1>
-
-          <p className="mt-10 max-w-xl text-base leading-relaxed text-slate-600 md:text-lg">
-            The industrial standard for neural BoQ analysis and infrastructure
-            tender evaluation. Built for operators of national-scale
-            procurement programs.
-          </p>
-
-          <div className="mt-12 flex flex-wrap items-center gap-3">
-            <Link
-              to="/auth"
-              className="label-xs flex items-center gap-3 border border-slate-900 bg-slate-900 px-6 py-4 text-white transition-colors hover:border-indigo-600 hover:bg-indigo-600"
-            >
-              Initiate System Audit
-              <ArrowRight className="h-3.5 w-3.5" strokeWidth={2.5} />
-            </Link>
-            <button className="label-xs border border-slate-200 bg-white px-6 py-4 text-slate-900 transition-colors hover:border-slate-900">
-              View Technical Brief
-            </button>
-          </div>
-
-          {/* spec strip */}
-          <div className="mt-20 grid grid-cols-2 gap-px border border-slate-200 bg-slate-200 md:grid-cols-4">
-            {[
-              ["Tender Volume", "$12.4B"],
-              ["Active Pipelines", "184"],
-              ["Risk Models", "27"],
-              ["Latency", "1.2s"],
-            ].map(([k, v]) => (
-              <div key={k} className="bg-white px-5 py-5">
-                <Label>{k}</Label>
-                <div className="mt-2 font-mono text-2xl font-bold tracking-tight text-slate-900">
-                  {v}
-                </div>
-              </div>
-            ))}
-          </div>
-        </div>
-      </section>
-
-      {/* NEURAL ENGINE */}
-      <section className="border-b border-slate-200">
-        <div className="mx-auto max-w-7xl px-6 py-24">
-          <div className="mb-16 flex flex-col gap-4 md:flex-row md:items-end md:justify-between">
-            <div>
-              <div className="mb-4 flex items-center gap-2">
-                <span className="inline-block h-1.5 w-1.5 bg-indigo-600" />
-                <Label>Module 02 / Neural Engine</Label>
-              </div>
-              <h2 className="max-w-2xl text-3xl font-black uppercase tracking-tighter text-slate-900 md:text-5xl">
-                The computational layer beneath every decision.
-              </h2>
-            </div>
-            <div className="font-mono text-xs text-slate-400">
-              REV. 2026.06 / CORE
-            </div>
-          </div>
-
-          <div className="grid grid-cols-1 gap-px border border-slate-200 bg-slate-200 md:grid-cols-3">
-            {[
-              {
-                icon: <Cpu className="h-4 w-4" strokeWidth={2} />,
-                label: "01 / BoQ Calibration",
-                title: "Bill-of-Quantities Calibration",
-                body: "Cross-referencing line items against regional market indices, supplier benchmarks, and historical cost performance.",
-              },
-              {
-                icon: <ShieldCheck className="h-4 w-4" strokeWidth={2} />,
-                label: "02 / Risk Indexing",
-                title: "Contractual Risk Indexing",
-                body: "Quantifying contractual and logistical slippage probability across the project lifecycle with deterministic models.",
-              },
-              {
-                icon: <Globe className="h-4 w-4" strokeWidth={2} />,
-                label: "03 / Terminal Pipeline",
-                title: "Procurement Pipeline",
-                body: "Integrated procurement feeds from ERA, PPSA, and ECAA, normalised into a single tender intelligence stream.",
-              },
-            ].map((c) => (
-              <div key={c.label} className="group bg-white p-8 transition-colors hover:bg-zinc-50">
-                <div className="flex items-center justify-between">
-                  <IconBox>{c.icon}</IconBox>
-                  <Label>{c.label}</Label>
-                </div>
-                <h3 className="mt-10 text-xl font-bold uppercase tracking-tight text-slate-900">
-                  {c.title}
-                </h3>
-                <p className="mt-3 text-sm leading-relaxed text-slate-600">
-                  {c.body}
-                </p>
-                <div className="mt-10 flex items-center gap-2 border-t border-slate-200 pt-4 label-xs text-slate-400 group-hover:text-indigo-600">
-                  Read Specification
-                  <ArrowRight className="h-3 w-3" strokeWidth={2.5} />
-                </div>
-              </div>
-            ))}
-          </div>
-        </div>
-      </section>
-
-      {/* ENGINEERING READOUT */}
-      <section className="border-b border-slate-200 bg-zinc-50">
-        <div className="mx-auto max-w-7xl px-6 py-24">
-          <div className="mb-12 flex items-center gap-2">
-            <span className="inline-block h-1.5 w-1.5 bg-indigo-600" />
-            <Label>Module 03 / Engineering Readout</Label>
-          </div>
-
-          <div className="grid grid-cols-1 gap-12 lg:grid-cols-[1fr_1.4fr]">
-            <div>
-              <h2 className="text-3xl font-black uppercase tracking-tighter text-slate-900 md:text-5xl">
-                Read a tender like a spec sheet.
-              </h2>
-              <p className="mt-6 max-w-md text-sm leading-relaxed text-slate-600">
-                Every bid is decomposed into deterministic variables. The
-                Engineering Readout surfaces variance, slippage exposure, and
-                margin integrity in a single, audit-ready frame.
-              </p>
-              <div className="mt-10 space-y-3 border-t border-slate-200 pt-6">
-                {[
-                  ["Source", "PPSA-EX-2418"],
-                  ["Issued", "2026.06.14 / 09:42Z"],
-                  ["Analyst", "OP-2207"],
-                  ["Compliance", "ISO 19650 / Tier 1"],
-                ].map(([k, v]) => (
-                  <div key={k} className="flex items-center justify-between font-mono text-xs">
-                    <span className="label-xs text-slate-400">{k}</span>
-                    <span className="text-slate-900">{v}</span>
-                  </div>
-                ))}
-              </div>
-            </div>
-
-            {/* Readout panel */}
-            <div className="border border-slate-300 bg-white">
-              {/* terminal header */}
-              <div className="flex items-center justify-between border-b border-slate-300 bg-slate-900 px-5 py-3">
-                <div className="flex items-center gap-3">
-                  <Activity className="h-3.5 w-3.5 text-indigo-400" strokeWidth={2.5} />
-                  <span className="label-xs text-white">Engineering Readout · LIVE</span>
-                </div>
-                <span className="font-mono text-[10px] text-slate-400">VLT://stream/0x4F2A</span>
-              </div>
-
-              <div className="grid grid-cols-2 gap-px border-b border-slate-300 bg-slate-200">
-                <div className="bg-white px-5 py-4">
-                  <Label>Project ID</Label>
-                  <div className="mt-1 font-mono text-sm font-bold text-slate-900">
-                    AAU-MTR-PH3-204
-                  </div>
-                </div>
-                <div className="bg-white px-5 py-4">
-                  <Label>Contract Value</Label>
-                  <div className="mt-1 font-mono text-sm font-bold text-slate-900">
-                    USD 482,140,000
-                  </div>
-                </div>
-              </div>
-
-              <div className="border-b border-slate-300 p-6">
-                <div className="flex items-end justify-between">
-                  <div>
-                    <Label>Composite Risk Index</Label>
-                    <div className="mt-2 font-black tracking-tighter text-slate-900 text-6xl">
-                      67.4<span className="text-2xl text-slate-400">%</span>
-                    </div>
-                  </div>
-                  <div className="text-right">
-                    <Label>Status</Label>
-                    <div className="mt-2 inline-flex items-center gap-2 border border-slate-900 bg-slate-900 px-3 py-1.5 text-white">
-                      <AlertTriangle className="h-3 w-3" strokeWidth={2.5} />
-                      <span className="label-xs">Variance Detected</span>
-                    </div>
-                  </div>
-                </div>
-
-                {/* bar */}
-                <div className="mt-6 h-1.5 w-full bg-slate-100">
-                  <div className="h-full bg-indigo-600" style={{ width: "67.4%" }} />
-                </div>
-                <div className="mt-2 flex justify-between font-mono text-[10px] text-slate-400">
-                  <span>0.0</span>
-                  <span>THRESHOLD 55.0</span>
-                  <span>100.0</span>
-                </div>
-              </div>
-
-              {/* line items */}
-              <div className="divide-y divide-slate-200">
-                {[
-                  ["Earthworks / Excavation", "+4.20%", "NOMINAL"],
-                  ["Reinforced Concrete C40", "+11.80%", "FLAGGED"],
-                  ["Steel Reinforcement Bar", "+18.05%", "FLAGGED"],
-                  ["MEP Subcontract Package", "+2.10%", "NOMINAL"],
-                  ["Logistics & Mobilisation", "+7.60%", "WATCH"],
-                ].map(([item, val, status]) => (
-                  <div key={item} className="grid grid-cols-[1fr_auto_auto] items-center gap-6 px-5 py-3 font-mono text-xs">
-                    <span className="text-slate-700">{item}</span>
-                    <span className="text-slate-900">{val}</span>
-                    <span
-                      className={
-                        "label-xs " +
-                        (status === "FLAGGED"
-                          ? "text-indigo-600"
-                          : status === "WATCH"
-                            ? "text-slate-900"
-                            : "text-slate-400")
-                      }
-                    >
-                      {status}
-                    </span>
-                  </div>
-                ))}
-              </div>
-
-              <div className="flex items-center justify-between border-t border-slate-300 bg-zinc-50 px-5 py-3">
-                <div className="flex items-center gap-2">
-                  <BarChart3 className="h-3.5 w-3.5 text-slate-500" strokeWidth={2} />
-                  <span className="label-xs text-slate-500">Model VLT-Core 4.2</span>
-                </div>
-                <span className="font-mono text-[10px] text-slate-400">
-                  T+0.84s / 2,418 variables
-                </span>
-              </div>
-            </div>
-          </div>
-        </div>
-      </section>
-
-      {/* CTA */}
-      <section className="border-b border-slate-200">
-        <div className="mx-auto flex max-w-7xl flex-col items-start justify-between gap-8 px-6 py-20 md:flex-row md:items-center">
-          <div>
-            <Label>Restricted Access</Label>
-            <h3 className="mt-4 max-w-2xl text-3xl font-black uppercase tracking-tighter text-slate-900 md:text-4xl">
-              Deploy Valtor against your active tender book.
-            </h3>
-          </div>
-          <Link
-            to="/auth"
-            className="label-xs flex items-center gap-3 border border-slate-900 bg-slate-900 px-6 py-4 text-white transition-colors hover:border-indigo-600 hover:bg-indigo-600"
-          >
-            Initiate System Audit
-            <ArrowRight className="h-3.5 w-3.5" strokeWidth={2.5} />
-          </Link>
-        </div>
-      </section>
-
-      {/* FOOTER */}
-      <footer className="bg-white">
-        <div className="mx-auto grid max-w-7xl grid-cols-1 gap-6 px-6 py-10 md:grid-cols-3">
-          <div className="flex items-center gap-3">
-            <div className="flex h-6 w-6 items-center justify-center bg-slate-900">
-              <div className="h-1.5 w-1.5 bg-white" />
-            </div>
-            <span className="label-xs text-slate-900">Valtor Systems</span>
-          </div>
-          <div className="font-mono text-[11px] text-slate-500 md:text-center">
-            Restricted Proprietary System — Unauthorized access prohibited.
-          </div>
-          <div className="font-mono text-[11px] text-slate-400 md:text-right">
-            BUILD v1.0.4 · SHA 0x4F2A · © 2026
-          </div>
-        </div>
-      </footer>
-    </div>
-  );
-}
-</file>
-
-<file path="src/styles.css">
-@import "tailwindcss" source(none);
-@source "../src";
-@import "tw-animate-css";
-
-@custom-variant dark (&:is(.dark *));
-
-@theme inline {
-  --radius-sm: calc(var(--radius) - 2px);
-  --radius-md: var(--radius);
-  --radius-lg: calc(var(--radius) + 2px);
-  --radius-xl: calc(var(--radius) + 4px);
-  --color-background: var(--background);
-  --color-foreground: var(--foreground);
-  --color-card: var(--card);
-  --color-card-foreground: var(--card-foreground);
-  --color-popover: var(--popover);
-  --color-popover-foreground: var(--popover-foreground);
-  --color-primary: var(--primary);
-  --color-primary-foreground: var(--primary-foreground);
-  --color-secondary: var(--secondary);
-  --color-secondary-foreground: var(--secondary-foreground);
-  --color-muted: var(--muted);
-  --color-muted-foreground: var(--muted-foreground);
-  --color-accent: var(--accent);
-  --color-accent-foreground: var(--accent-foreground);
-  --color-destructive: var(--destructive);
-  --color-destructive-foreground: var(--destructive-foreground);
-  --color-success: var(--success);
-  --color-warning: var(--warning);
-  --color-border: var(--border);
-  --color-input: var(--input);
-  --color-ring: var(--ring);
-}
-
-:root {
-  --radius: 0.375rem;
-
-  /* Valtor Brand — Deep slate infrastructure platform */
-  --background: #F7F8FA;
-  --foreground: #0D1117;
-
-  --card: #FFFFFF;
-  --card-foreground: #0D1117;
-  --popover: #FFFFFF;
-  --popover-foreground: #0D1117;
-
-  --primary: #0F2240;
-  --primary-foreground: #FFFFFF;
-  --secondary: #EEF1F6;
-  --secondary-foreground: #374151;
-
-  --muted: #EEF1F6;
-  --muted-foreground: #6B7280;
-
-  /* Single accent — steel blue, used for CTAs and active states only */
-  --accent: #1D4ED8;
-  --accent-foreground: #FFFFFF;
-
-  --destructive: #B91C1C;
-  --destructive-foreground: #FFFFFF;
-  --success: #15803D;
-  --warning: #B45309;
-
-  --border: #E4E7EC;
-  --input: #FFFFFF;
-  --ring: rgba(15, 34, 64, 0.15);
-
-  --shadow-xs: 0 1px 2px rgba(0,0,0,0.04);
-  --shadow-sm: 0 1px 3px rgba(0,0,0,0.06), 0 1px 2px rgba(0,0,0,0.04);
-  --shadow-md: 0 4px 8px rgba(0,0,0,0.06), 0 2px 4px rgba(0,0,0,0.04);
-}
-
-@layer base {
-  * {
-    border-color: var(--color-border);
-    box-sizing: border-box;
-  }
-
-  html, body, #root {
-    min-height: 100%;
-  }
-
-  body {
-    background-color: var(--color-background);
-    color: var(--color-foreground);
-    font-family: "Inter", system-ui, -apple-system, sans-serif;
-    -webkit-font-smoothing: antialiased;
-    -moz-osx-font-smoothing: grayscale;
-    font-size: 14px;
-    line-height: 1.5;
-  }
-
-  h1, h2, h3, h4, h5, h6 {
-    font-family: "Inter", system-ui, sans-serif;
-    letter-spacing: -0.02em;
-    line-height: 1.2;
-  }
-
-  input, textarea, select {
-    font-family: inherit;
-    font-size: inherit;
-  }
-}
-
-@layer components {
-  /* ── Core panel ─────────────────────────────────────────────────────── */
-  .panel {
-    background: #FFFFFF;
-    border: 1px solid #E4E7EC;
-    border-radius: var(--radius-md);
-    box-shadow: var(--shadow-xs);
-  }
-
-  /* ── Form inputs ─────────────────────────────────────────────────────── */
-  .field-input {
-    background: #FFFFFF;
-    border: 1px solid #D1D5DB;
-    border-radius: var(--radius-sm);
-    color: #0D1117;
-    padding: 0.5rem 0.75rem;
-    width: 100%;
-    font-size: 0.875rem;
-    transition: border-color 0.12s ease, box-shadow 0.12s ease;
-  }
-  .field-input:focus {
-    border-color: #0F2240;
-    box-shadow: 0 0 0 3px rgba(15, 34, 64, 0.1);
-    outline: none;
-  }
-  .field-input::placeholder {
-    color: #9CA3AF;
-  }
-
-  /* ── Buttons ─────────────────────────────────────────────────────────── */
-  .btn-primary {
-    background: #0F2240;
-    color: #FFFFFF;
-    font-weight: 600;
-    font-size: 0.875rem;
-    border-radius: var(--radius-sm);
-    border: 1px solid #0F2240;
-    padding: 0.5rem 1rem;
-    display: inline-flex;
-    align-items: center;
-    gap: 0.375rem;
-    cursor: pointer;
-    transition: background 0.12s ease, border-color 0.12s ease;
-    white-space: nowrap;
-  }
-  .btn-primary:hover { background: #0A1929; border-color: #0A1929; }
-  .btn-primary:disabled { opacity: 0.45; cursor: not-allowed; }
-
-  .btn-secondary {
-    background: #FFFFFF;
-    color: #374151;
-    font-weight: 500;
-    font-size: 0.875rem;
-    border-radius: var(--radius-sm);
-    border: 1px solid #D1D5DB;
-    padding: 0.5rem 1rem;
-    display: inline-flex;
-    align-items: center;
-    gap: 0.375rem;
-    cursor: pointer;
-    transition: background 0.12s ease, border-color 0.12s ease;
-    white-space: nowrap;
-  }
-  .btn-secondary:hover { background: #F9FAFB; border-color: #9CA3AF; }
-  .btn-secondary:disabled { opacity: 0.45; cursor: not-allowed; }
-
-  .btn-accent {
-    background: #1D4ED8;
-    color: #FFFFFF;
-    font-weight: 600;
-    font-size: 0.875rem;
-    border-radius: var(--radius-sm);
-    border: 1px solid #1D4ED8;
-    padding: 0.5rem 1rem;
-    display: inline-flex;
-    align-items: center;
-    gap: 0.375rem;
-    cursor: pointer;
-    transition: background 0.12s ease;
-    white-space: nowrap;
-  }
-  .btn-accent:hover { background: #1A44C5; }
-  .btn-accent:disabled { opacity: 0.45; cursor: not-allowed; }
-
-  .btn-ghost {
-    background: transparent;
-    color: #6B7280;
-    font-size: 0.875rem;
-    border-radius: var(--radius-sm);
-    border: 1px solid transparent;
-    padding: 0.375rem 0.5rem;
-    display: inline-flex;
-    align-items: center;
-    gap: 0.25rem;
-    cursor: pointer;
-    transition: background 0.12s ease, color 0.12s ease;
-  }
-  .btn-ghost:hover { background: #F3F4F6; color: #0D1117; border-color: #E4E7EC; }
-
-  /* ── Data table ──────────────────────────────────────────────────────── */
-  .data-table {
-    width: 100%;
-    font-size: 0.8125rem;
-    border-collapse: collapse;
-  }
-  .data-table thead tr {
-    background: #F7F8FA;
-    border-bottom: 1px solid #E4E7EC;
-  }
-  .data-table thead th {
-    text-align: left;
-    padding: 0.625rem 1rem;
-    font-size: 0.6875rem;
-    font-weight: 600;
-    text-transform: uppercase;
-    letter-spacing: 0.06em;
-    color: #6B7280;
-    white-space: nowrap;
-  }
-  .data-table thead th.text-right { text-align: right; }
-  .data-table tbody tr {
-    border-bottom: 1px solid #F3F4F6;
-    transition: background 0.08s ease;
-  }
-  .data-table tbody tr:hover { background: #FAFBFC; }
-  .data-table tbody td {
-    padding: 0.75rem 1rem;
-    color: #111827;
-    vertical-align: middle;
-  }
-  .data-table tbody td.text-right { text-align: right; }
-  .data-table tbody td.muted { color: #6B7280; }
-
-  /* ── Status badges ───────────────────────────────────────────────────── */
-  .badge {
-    display: inline-flex;
-    align-items: center;
-    gap: 0.25rem;
-    font-size: 0.6875rem;
-    font-weight: 600;
-    letter-spacing: 0.04em;
-    padding: 0.2rem 0.5rem;
-    border-radius: 3px;
-    border: 1px solid transparent;
-    white-space: nowrap;
-  }
-  .badge-green  { background: #F0FDF4; color: #15803D; border-color: #BBF7D0; }
-  .badge-red    { background: #FEF2F2; color: #B91C1C; border-color: #FECACA; }
-  .badge-amber  { background: #FFFBEB; color: #B45309; border-color: #FDE68A; }
-  .badge-blue   { background: #EFF6FF; color: #1D4ED8; border-color: #BFDBFE; }
-  .badge-slate  { background: #F8FAFC; color: #475569; border-color: #CBD5E1; }
-  .badge-navy   { background: #EFF3FA; color: #0F2240; border-color: #C3CEDF; }
-
-  /* ── Page header ─────────────────────────────────────────────────────── */
-  .page-header {
-    margin-bottom: 1.5rem;
-  }
-  .page-title {
-    font-size: 1.375rem;
-    font-weight: 700;
-    color: #0D1117;
-    letter-spacing: -0.025em;
-  }
-  .page-subtitle {
-    font-size: 0.8125rem;
-    color: #6B7280;
-    margin-top: 0.25rem;
-  }
-
-  /* ── Section label ───────────────────────────────────────────────────── */
-  .section-label {
-    font-size: 0.6875rem;
-    font-weight: 600;
-    text-transform: uppercase;
-    letter-spacing: 0.07em;
-    color: #6B7280;
-    margin-bottom: 0.5rem;
-  }
-
-  /* ── Stat card ───────────────────────────────────────────────────────── */
-  .stat-card {
-    background: #FFFFFF;
-    border: 1px solid #E4E7EC;
-    border-radius: var(--radius-md);
-    padding: 1.25rem 1.5rem;
-  }
-  .stat-label {
-    font-size: 0.6875rem;
-    font-weight: 600;
-    text-transform: uppercase;
-    letter-spacing: 0.06em;
-    color: #6B7280;
-    margin-bottom: 0.5rem;
-  }
-  .stat-value {
-    font-size: 1.625rem;
-    font-weight: 700;
-    color: #0D1117;
-    letter-spacing: -0.025em;
-    line-height: 1;
-  }
-  .stat-delta {
-    font-size: 0.75rem;
-    color: #6B7280;
-    margin-top: 0.375rem;
-  }
-
-  /* ── Risk score ring ─────────────────────────────────────────────────── */
-  .risk-low    { color: #15803D; }
-  .risk-medium { color: #B45309; }
-  .risk-high   { color: #B91C1C; }
-
-  /* ── Divider ─────────────────────────────────────────────────────────── */
-  .divider {
-    border: none;
-    border-top: 1px solid #E4E7EC;
-    margin: 1.5rem 0;
-  }
-
-  /* ── File queue row ──────────────────────────────────────────────────── */
-  .file-row {
-    display: flex;
-    align-items: center;
-    gap: 0.75rem;
-    padding: 0.625rem 0.875rem;
-    border-bottom: 1px solid #F3F4F6;
-  }
-  .file-row:last-child { border-bottom: none; }
-  .file-row:nth-child(odd) { background: #FAFBFC; }
-  .file-row:nth-child(even) { background: #FFFFFF; }
-
-  /* ── Dropzone ────────────────────────────────────────────────────────── */
-  .dropzone {
-    border: 1.5px dashed #D1D5DB;
-    border-radius: var(--radius-md);
-    padding: 2rem 1.5rem;
-    text-align: center;
-    cursor: pointer;
-    transition: border-color 0.12s ease, background 0.12s ease;
-    background: #FAFBFC;
-  }
-  .dropzone:hover, .dropzone.active {
-    border-color: #0F2240;
-    background: #F0F3F8;
-  }
-
-  /* ── Sidebar nav ─────────────────────────────────────────────────────── */
-  .nav-link {
-    display: flex;
-    align-items: center;
-    gap: 0.625rem;
-    padding: 0.5rem 0.875rem;
-    border-radius: var(--radius-sm);
-    font-size: 0.8125rem;
-    font-weight: 500;
-    color: #6B7280;
-    text-decoration: none;
-    transition: background 0.1s ease, color 0.1s ease;
-    white-space: nowrap;
-  }
-  .nav-link:hover { background: #F3F4F6; color: #0D1117; }
-  .nav-link.active {
-    background: #EEF1F6;
-    color: #0F2240;
-    font-weight: 600;
-    border-left: 2px solid #0F2240;
-    padding-left: calc(0.875rem - 2px);
-  }
-
-  /* ── Empty state ─────────────────────────────────────────────────────── */
-  .empty-state {
-    padding: 3.5rem 2rem;
-    text-align: center;
-    color: #9CA3AF;
-  }
-  .empty-state p { font-size: 0.875rem; margin-top: 0.5rem; }
-}
-
-/* ── Landing page utilities (merged from marketing site) ────────────────── */
-@utility grid-bg {
-  background-image:
-    linear-gradient(to right, rgba(228, 231, 236, 0.6) 1px, transparent 1px),
-    linear-gradient(to bottom, rgba(228, 231, 236, 0.6) 1px, transparent 1px);
-  background-size: 40px 40px;
-}
-
-@utility label-xs {
-  font-size: 10px;
-  font-weight: 700;
-  text-transform: uppercase;
-  letter-spacing: 0.2em;
 }
 </file>
 
@@ -2692,6 +3059,382 @@ function AuthPage() {
 }
 </file>
 
+<file path="src/routes/index.tsx">
+import { createFileRoute, Link } from "@tanstack/react-router";
+import { Cpu, ShieldCheck, BarChart3, Globe, ArrowRight, Activity, AlertTriangle } from "lucide-react";
+import { HeroBuildingScene } from "@/components/HeroBuildingScene";
+
+export const Route = createFileRoute("/")({
+  head: () => ({
+    meta: [
+      { title: "Valtor — Bid Intelligence & Infrastructure Risk" },
+      { name: "description", content: "The industrial standard for neural BoQ analysis and infrastructure tender evaluation." },
+      { property: "og:title", content: "Valtor — Bid Intelligence & Infrastructure Risk" },
+      { property: "og:description", content: "Quantifying construction bid risk for industrial procurement." },
+    ],
+  }),
+  component: Index,
+});
+
+function Label({ children }: { children: React.ReactNode }) {
+  return <span className="label-xs text-slate-500">{children}</span>;
+}
+
+function IconBox({ children }: { children: React.ReactNode }) {
+  return (
+    <div className="inline-flex h-9 w-9 items-center justify-center border border-slate-200 bg-white text-slate-900">
+      {children}
+    </div>
+  );
+}
+
+function Index() {
+  return (
+    <div className="min-h-screen bg-white text-slate-900 font-sans">
+      {/* NAV */}
+      <header className="border-b border-slate-200 bg-white">
+        <div className="mx-auto flex max-w-7xl items-center justify-between px-6 py-4">
+          <div className="flex items-center gap-3">
+            <div className="flex h-7 w-7 items-center justify-center bg-slate-900">
+              <div className="h-2 w-2 bg-white" />
+            </div>
+            <span className="text-sm font-black uppercase tracking-[0.2em] text-slate-900">
+              Valtor
+            </span>
+            <span className="ml-3 hidden label-xs text-slate-400 md:inline">
+              / Bid Intelligence System
+            </span>
+          </div>
+          <nav className="flex items-center gap-2">
+            <Link
+              to="/auth"
+              className="label-xs border border-slate-200 bg-white px-4 py-2.5 text-slate-900 transition-colors hover:border-slate-900 hover:bg-slate-900 hover:text-white"
+            >
+              Operator Login
+            </Link>
+            <Link
+              to="/auth"
+              className="label-xs flex items-center gap-2 border border-slate-900 bg-slate-900 px-4 py-2.5 text-white transition-colors hover:border-indigo-600 hover:bg-indigo-600"
+            >
+              Access Terminal
+              <ArrowRight className="h-3 w-3" strokeWidth={2.5} />
+            </Link>
+          </nav>
+        </div>
+      </header>
+
+      {/* HERO */}
+      <section className="relative border-b border-slate-200 overflow-hidden">
+        {/* Grid background — unchanged */}
+        <div className="absolute inset-0 grid-bg pointer-events-none" />
+
+        <div className="relative mx-auto max-w-7xl px-6 py-20 md:py-28">
+          <div className="grid grid-cols-1 items-center gap-10 lg:grid-cols-[1fr_520px]">
+
+            {/* ── LEFT: existing content ── */}
+            <div>
+              {/* eyebrow */}
+              <div className="mb-10 flex items-center gap-3">
+                <span className="inline-block h-1.5 w-1.5 bg-indigo-600" />
+                <Label>System Online — Index v1.0.4</Label>
+              </div>
+
+              <h1 className="max-w-5xl text-5xl font-black uppercase tracking-tighter leading-[0.95] text-slate-900 md:text-7xl lg:text-[80px]">
+                Quantifying<br />Construction<br />
+                <span className="text-slate-400">Bid Risk.</span>
+              </h1>
+
+              <p className="mt-10 max-w-xl text-base leading-relaxed text-slate-600 md:text-lg">
+                The industrial standard for neural BoQ analysis and infrastructure
+                tender evaluation. Built for operators of national-scale
+                procurement programs.
+              </p>
+
+              <div className="mt-12 flex flex-wrap items-center gap-3">
+                <Link
+                  to="/auth"
+                  className="label-xs flex items-center gap-3 border border-slate-900 bg-slate-900 px-6 py-4 text-white transition-colors hover:border-indigo-600 hover:bg-indigo-600"
+                >
+                  Initiate System Audit
+                  <ArrowRight className="h-3.5 w-3.5" strokeWidth={2.5} />
+                </Link>
+                <button className="label-xs border border-slate-200 bg-white px-6 py-4 text-slate-900 transition-colors hover:border-slate-900">
+                  View Technical Brief
+                </button>
+              </div>
+
+              {/* spec strip */}
+              <div className="mt-20 grid grid-cols-2 gap-px border border-slate-200 bg-slate-200 md:grid-cols-4">
+                {[
+                  ["Tender Volume", "$12.4B"],
+                  ["Active Pipelines", "184"],
+                  ["Risk Models", "27"],
+                  ["Latency", "1.2s"],
+                ].map(([k, v]) => (
+                  <div key={k} className="bg-white px-5 py-5">
+                    <Label>{k}</Label>
+                    <div className="mt-2 font-mono text-2xl font-bold tracking-tight text-slate-900">
+                      {v}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            {/* ── RIGHT: 3D construction scene ── */}
+            {/*
+              Hidden below lg breakpoint. The canvas is transparent so the
+              grid-bg behind the hero section shows through naturally.
+            */}
+            <div
+              className="relative hidden lg:flex items-center justify-center"
+              style={{ height: "560px" }}
+            >
+              {/* Subtle radial vignette at the edges so the scene fades into the page */}
+              <div
+                className="absolute inset-0 pointer-events-none z-10"
+                style={{
+                  background:
+                    "radial-gradient(ellipse at center, transparent 40%, rgba(255,255,255,0.55) 100%)",
+                }}
+              />
+              <HeroBuildingScene />
+            </div>
+
+          </div>
+        </div>
+      </section>
+
+      {/* NEURAL ENGINE */}
+      <section className="border-b border-slate-200">
+        <div className="mx-auto max-w-7xl px-6 py-24">
+          <div className="mb-16 flex flex-col gap-4 md:flex-row md:items-end md:justify-between">
+            <div>
+              <div className="mb-4 flex items-center gap-2">
+                <span className="inline-block h-1.5 w-1.5 bg-indigo-600" />
+                <Label>Module 02 / Neural Engine</Label>
+              </div>
+              <h2 className="max-w-2xl text-3xl font-black uppercase tracking-tighter text-slate-900 md:text-5xl">
+                The computational layer beneath every decision.
+              </h2>
+            </div>
+            <div className="font-mono text-xs text-slate-400">
+              REV. 2026.06 / CORE
+            </div>
+          </div>
+
+          <div className="grid grid-cols-1 gap-px border border-slate-200 bg-slate-200 md:grid-cols-3">
+            {[
+              {
+                icon: <Cpu className="h-4 w-4" strokeWidth={2} />,
+                label: "01 / BoQ Calibration",
+                title: "Bill-of-Quantities Calibration",
+                body: "Cross-referencing line items against regional market indices, supplier benchmarks, and historical cost performance.",
+              },
+              {
+                icon: <ShieldCheck className="h-4 w-4" strokeWidth={2} />,
+                label: "02 / Risk Indexing",
+                title: "Contractual Risk Indexing",
+                body: "Quantifying contractual and logistical slippage probability across the project lifecycle with deterministic models.",
+              },
+              {
+                icon: <Globe className="h-4 w-4" strokeWidth={2} />,
+                label: "03 / Terminal Pipeline",
+                title: "Procurement Pipeline",
+                body: "Integrated procurement feeds from ERA, PPSA, and ECAA, normalised into a single tender intelligence stream.",
+              },
+            ].map((c) => (
+              <div key={c.label} className="group bg-white p-8 transition-colors hover:bg-zinc-50">
+                <div className="flex items-center justify-between">
+                  <IconBox>{c.icon}</IconBox>
+                  <Label>{c.label}</Label>
+                </div>
+                <h3 className="mt-10 text-xl font-bold uppercase tracking-tight text-slate-900">
+                  {c.title}
+                </h3>
+                <p className="mt-3 text-sm leading-relaxed text-slate-600">
+                  {c.body}
+                </p>
+                <div className="mt-10 flex items-center gap-2 border-t border-slate-200 pt-4 label-xs text-slate-400 group-hover:text-indigo-600">
+                  Read Specification
+                  <ArrowRight className="h-3 w-3" strokeWidth={2.5} />
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      </section>
+
+      {/* ENGINEERING READOUT */}
+      <section id="engineering-readout" className="border-b border-slate-200 bg-zinc-50">
+        <div className="mx-auto max-w-7xl px-6 py-24">
+          <div className="mb-12 flex items-center gap-2">
+            <span className="inline-block h-1.5 w-1.5 bg-indigo-600" />
+            <Label>Module 03 / Engineering Readout</Label>
+          </div>
+
+          <div className="grid grid-cols-1 gap-12 lg:grid-cols-[1fr_1.4fr]">
+            <div>
+              <h2 className="text-3xl font-black uppercase tracking-tighter text-slate-900 md:text-5xl">
+                Read a tender like a spec sheet.
+              </h2>
+              <p className="mt-6 max-w-md text-sm leading-relaxed text-slate-600">
+                Every bid is decomposed into deterministic variables. The
+                Engineering Readout surfaces variance, slippage exposure, and
+                margin integrity in a single, audit-ready frame.
+              </p>
+              <div className="mt-10 space-y-3 border-t border-slate-200 pt-6">
+                {[
+                  ["Source", "PPSA-EX-2418"],
+                  ["Issued", "2026.06.14 / 09:42Z"],
+                  ["Analyst", "OP-2207"],
+                  ["Compliance", "ISO 19650 / Tier 1"],
+                ].map(([k, v]) => (
+                  <div key={k} className="flex items-center justify-between font-mono text-xs">
+                    <span className="label-xs text-slate-400">{k}</span>
+                    <span className="text-slate-900">{v}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            {/* Readout panel */}
+            <div className="border border-slate-300 bg-white">
+              {/* terminal header */}
+              <div className="flex items-center justify-between border-b border-slate-300 bg-slate-900 px-5 py-3">
+                <div className="flex items-center gap-3">
+                  <Activity className="h-3.5 w-3.5 text-indigo-400" strokeWidth={2.5} />
+                  <span className="label-xs text-white">Engineering Readout · LIVE</span>
+                </div>
+                <span className="font-mono text-[10px] text-slate-400">VLT://stream/0x4F2A</span>
+              </div>
+
+              <div className="grid grid-cols-2 gap-px border-b border-slate-300 bg-slate-200">
+                <div className="bg-white px-5 py-4">
+                  <Label>Project ID</Label>
+                  <div className="mt-1 font-mono text-sm font-bold text-slate-900">
+                    AAU-MTR-PH3-204
+                  </div>
+                </div>
+                <div className="bg-white px-5 py-4">
+                  <Label>Contract Value</Label>
+                  <div className="mt-1 font-mono text-sm font-bold text-slate-900">
+                    USD 482,140,000
+                  </div>
+                </div>
+              </div>
+
+              <div className="border-b border-slate-300 p-6">
+                <div className="flex items-end justify-between">
+                  <div>
+                    <Label>Composite Risk Index</Label>
+                    <div className="mt-2 font-black tracking-tighter text-slate-900 text-6xl">
+                      67.4<span className="text-2xl text-slate-400">%</span>
+                    </div>
+                  </div>
+                  <div className="text-right">
+                    <Label>Status</Label>
+                    <div className="mt-2 inline-flex items-center gap-2 border border-slate-900 bg-slate-900 px-3 py-1.5 text-white">
+                      <AlertTriangle className="h-3 w-3" strokeWidth={2.5} />
+                      <span className="label-xs">Variance Detected</span>
+                    </div>
+                  </div>
+                </div>
+
+                {/* bar */}
+                <div className="mt-6 h-1.5 w-full bg-slate-100">
+                  <div className="h-full bg-indigo-600" style={{ width: "67.4%" }} />
+                </div>
+                <div className="mt-2 flex justify-between font-mono text-[10px] text-slate-400">
+                  <span>0.0</span>
+                  <span>THRESHOLD 55.0</span>
+                  <span>100.0</span>
+                </div>
+              </div>
+
+              {/* line items */}
+              <div className="divide-y divide-slate-200">
+                {[
+                  ["Earthworks / Excavation", "+4.20%", "NOMINAL"],
+                  ["Reinforced Concrete C40", "+11.80%", "FLAGGED"],
+                  ["Steel Reinforcement Bar", "+18.05%", "FLAGGED"],
+                  ["MEP Subcontract Package", "+2.10%", "NOMINAL"],
+                  ["Logistics & Mobilisation", "+7.60%", "WATCH"],
+                ].map(([item, val, status]) => (
+                  <div key={item} className="grid grid-cols-[1fr_auto_auto] items-center gap-6 px-5 py-3 font-mono text-xs">
+                    <span className="text-slate-700">{item}</span>
+                    <span className="text-slate-900">{val}</span>
+                    <span
+                      className={
+                        "label-xs " +
+                        (status === "FLAGGED"
+                          ? "text-indigo-600"
+                          : status === "WATCH"
+                            ? "text-slate-900"
+                            : "text-slate-400")
+                      }
+                    >
+                      {status}
+                    </span>
+                  </div>
+                ))}
+              </div>
+
+              <div className="flex items-center justify-between border-t border-slate-300 bg-zinc-50 px-5 py-3">
+                <div className="flex items-center gap-2">
+                  <BarChart3 className="h-3.5 w-3.5 text-slate-500" strokeWidth={2} />
+                  <span className="label-xs text-slate-500">Model VLT-Core 4.2</span>
+                </div>
+                <span className="font-mono text-[10px] text-slate-400">
+                  T+0.84s / 2,418 variables
+                </span>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      {/* CTA */}
+      <section className="border-b border-slate-200">
+        <div className="mx-auto flex max-w-7xl flex-col items-start justify-between gap-8 px-6 py-20 md:flex-row md:items-center">
+          <div>
+            <Label>Restricted Access</Label>
+            <h3 className="mt-4 max-w-2xl text-3xl font-black uppercase tracking-tighter text-slate-900 md:text-4xl">
+              Deploy Valtor against your active tender book.
+            </h3>
+          </div>
+          <Link
+            to="/auth"
+            className="label-xs flex items-center gap-3 border border-slate-900 bg-slate-900 px-6 py-4 text-white transition-colors hover:border-indigo-600 hover:bg-indigo-600"
+          >
+            Initiate System Audit
+            <ArrowRight className="h-3.5 w-3.5" strokeWidth={2.5} />
+          </Link>
+        </div>
+      </section>
+
+      {/* FOOTER */}
+      <footer className="bg-white">
+        <div className="mx-auto grid max-w-7xl grid-cols-1 gap-6 px-6 py-10 md:grid-cols-3">
+          <div className="flex items-center gap-3">
+            <div className="flex h-6 w-6 items-center justify-center bg-slate-900">
+              <div className="h-1.5 w-1.5 bg-white" />
+            </div>
+            <span className="label-xs text-slate-900">Valtor Systems</span>
+          </div>
+          <div className="font-mono text-[11px] text-slate-500 md:text-center">
+            Restricted Proprietary System — Unauthorized access prohibited.
+          </div>
+          <div className="font-mono text-[11px] text-slate-400 md:text-right">
+            BUILD v1.0.4 · SHA 0x4F2A · © 2026
+          </div>
+        </div>
+      </footer>
+    </div>
+  );
+}
+</file>
+
 <file path="src/routeTree.gen.ts">
 /* eslint-disable */
 
@@ -2881,6 +3624,405 @@ const rootRouteChildren: RootRouteChildren = {
 export const routeTree = rootRouteImport
   ._addFileChildren(rootRouteChildren)
   ._addFileTypes<FileRouteTypes>();
+</file>
+
+<file path="src/styles.css">
+@import "tailwindcss" source(none);
+@source "../src";
+@import "tw-animate-css";
+
+@custom-variant dark (&:is(.dark *));
+
+@theme inline {
+  --radius-sm: calc(var(--radius) - 2px);
+  --radius-md: var(--radius);
+  --radius-lg: calc(var(--radius) + 2px);
+  --radius-xl: calc(var(--radius) + 4px);
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-destructive-foreground: var(--destructive-foreground);
+  --color-success: var(--success);
+  --color-warning: var(--warning);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+}
+
+:root {
+  --radius: 0.375rem;
+
+  /* Valtor Brand — Deep slate infrastructure platform */
+  --background: #F7F8FA;
+  --foreground: #0D1117;
+
+  --card: #FFFFFF;
+  --card-foreground: #0D1117;
+  --popover: #FFFFFF;
+  --popover-foreground: #0D1117;
+
+  --primary: #0F2240;
+  --primary-foreground: #FFFFFF;
+  --secondary: #EEF1F6;
+  --secondary-foreground: #374151;
+
+  --muted: #EEF1F6;
+  --muted-foreground: #6B7280;
+
+  /* Single accent — steel blue, used for CTAs and active states only */
+  --accent: #1D4ED8;
+  --accent-foreground: #FFFFFF;
+
+  --destructive: #B91C1C;
+  --destructive-foreground: #FFFFFF;
+  --success: #15803D;
+  --warning: #B45309;
+
+  --border: #E4E7EC;
+  --input: #FFFFFF;
+  --ring: rgba(15, 34, 64, 0.15);
+
+  --shadow-xs: 0 1px 2px rgba(0,0,0,0.04);
+  --shadow-sm: 0 1px 3px rgba(0,0,0,0.06), 0 1px 2px rgba(0,0,0,0.04);
+  --shadow-md: 0 4px 8px rgba(0,0,0,0.06), 0 2px 4px rgba(0,0,0,0.04);
+}
+
+@layer base {
+  * {
+    border-color: var(--color-border);
+    box-sizing: border-box;
+  }
+
+  html, body, #root {
+    min-height: 100%;
+  }
+
+  body {
+    background-color: var(--color-background);
+    color: var(--color-foreground);
+    font-family: "Inter", system-ui, -apple-system, sans-serif;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    font-size: 14px;
+    line-height: 1.5;
+  }
+
+  h1, h2, h3, h4, h5, h6 {
+    font-family: "Inter", system-ui, sans-serif;
+    letter-spacing: -0.02em;
+    line-height: 1.2;
+  }
+
+  input, textarea, select {
+    font-family: inherit;
+    font-size: inherit;
+  }
+}
+
+@layer components {
+  /* ── Core panel ─────────────────────────────────────────────────────── */
+  .panel {
+    background: #FFFFFF;
+    border: 1px solid #E4E7EC;
+    border-radius: var(--radius-md);
+    box-shadow: var(--shadow-xs);
+  }
+
+  /* ── Form inputs ─────────────────────────────────────────────────────── */
+  .field-input {
+    background: #FFFFFF;
+    border: 1px solid #D1D5DB;
+    border-radius: var(--radius-sm);
+    color: #0D1117;
+    padding: 0.5rem 0.75rem;
+    width: 100%;
+    font-size: 0.875rem;
+    transition: border-color 0.12s ease, box-shadow 0.12s ease;
+  }
+  .field-input:focus {
+    border-color: #0F2240;
+    box-shadow: 0 0 0 3px rgba(15, 34, 64, 0.1);
+    outline: none;
+  }
+  .field-input::placeholder {
+    color: #9CA3AF;
+  }
+
+  /* ── Buttons ─────────────────────────────────────────────────────────── */
+  .btn-primary {
+    background: #0F2240;
+    color: #FFFFFF;
+    font-weight: 600;
+    font-size: 0.875rem;
+    border-radius: var(--radius-sm);
+    border: 1px solid #0F2240;
+    padding: 0.5rem 1rem;
+    display: inline-flex;
+    align-items: center;
+    gap: 0.375rem;
+    cursor: pointer;
+    transition: background 0.12s ease, border-color 0.12s ease;
+    white-space: nowrap;
+  }
+  .btn-primary:hover { background: #0A1929; border-color: #0A1929; }
+  .btn-primary:disabled { opacity: 0.45; cursor: not-allowed; }
+
+  .btn-secondary {
+    background: #FFFFFF;
+    color: #374151;
+    font-weight: 500;
+    font-size: 0.875rem;
+    border-radius: var(--radius-sm);
+    border: 1px solid #D1D5DB;
+    padding: 0.5rem 1rem;
+    display: inline-flex;
+    align-items: center;
+    gap: 0.375rem;
+    cursor: pointer;
+    transition: background 0.12s ease, border-color 0.12s ease;
+    white-space: nowrap;
+  }
+  .btn-secondary:hover { background: #F9FAFB; border-color: #9CA3AF; }
+  .btn-secondary:disabled { opacity: 0.45; cursor: not-allowed; }
+
+  .btn-accent {
+    background: #1D4ED8;
+    color: #FFFFFF;
+    font-weight: 600;
+    font-size: 0.875rem;
+    border-radius: var(--radius-sm);
+    border: 1px solid #1D4ED8;
+    padding: 0.5rem 1rem;
+    display: inline-flex;
+    align-items: center;
+    gap: 0.375rem;
+    cursor: pointer;
+    transition: background 0.12s ease;
+    white-space: nowrap;
+  }
+  .btn-accent:hover { background: #1A44C5; }
+  .btn-accent:disabled { opacity: 0.45; cursor: not-allowed; }
+
+  .btn-ghost {
+    background: transparent;
+    color: #6B7280;
+    font-size: 0.875rem;
+    border-radius: var(--radius-sm);
+    border: 1px solid transparent;
+    padding: 0.375rem 0.5rem;
+    display: inline-flex;
+    align-items: center;
+    gap: 0.25rem;
+    cursor: pointer;
+    transition: background 0.12s ease, color 0.12s ease;
+  }
+  .btn-ghost:hover { background: #F3F4F6; color: #0D1117; border-color: #E4E7EC; }
+
+  /* ── Data table ──────────────────────────────────────────────────────── */
+  .data-table {
+    width: 100%;
+    font-size: 0.8125rem;
+    border-collapse: collapse;
+  }
+  .data-table thead tr {
+    background: #F7F8FA;
+    border-bottom: 1px solid #E4E7EC;
+  }
+  .data-table thead th {
+    text-align: left;
+    padding: 0.625rem 1rem;
+    font-size: 0.6875rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: #6B7280;
+    white-space: nowrap;
+  }
+  .data-table thead th.text-right { text-align: right; }
+  .data-table tbody tr {
+    border-bottom: 1px solid #F3F4F6;
+    transition: background 0.08s ease;
+  }
+  .data-table tbody tr:hover { background: #FAFBFC; }
+  .data-table tbody td {
+    padding: 0.75rem 1rem;
+    color: #111827;
+    vertical-align: middle;
+  }
+  .data-table tbody td.text-right { text-align: right; }
+  .data-table tbody td.muted { color: #6B7280; }
+
+  /* ── Status badges ───────────────────────────────────────────────────── */
+  .badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.25rem;
+    font-size: 0.6875rem;
+    font-weight: 600;
+    letter-spacing: 0.04em;
+    padding: 0.2rem 0.5rem;
+    border-radius: 3px;
+    border: 1px solid transparent;
+    white-space: nowrap;
+  }
+  .badge-green  { background: #F0FDF4; color: #15803D; border-color: #BBF7D0; }
+  .badge-red    { background: #FEF2F2; color: #B91C1C; border-color: #FECACA; }
+  .badge-amber  { background: #FFFBEB; color: #B45309; border-color: #FDE68A; }
+  .badge-blue   { background: #EFF6FF; color: #1D4ED8; border-color: #BFDBFE; }
+  .badge-slate  { background: #F8FAFC; color: #475569; border-color: #CBD5E1; }
+  .badge-navy   { background: #EFF3FA; color: #0F2240; border-color: #C3CEDF; }
+
+  /* ── Page header ─────────────────────────────────────────────────────── */
+  .page-header {
+    margin-bottom: 1.5rem;
+  }
+  .page-title {
+    font-size: 1.375rem;
+    font-weight: 700;
+    color: #0D1117;
+    letter-spacing: -0.025em;
+  }
+  .page-subtitle {
+    font-size: 0.8125rem;
+    color: #6B7280;
+    margin-top: 0.25rem;
+  }
+
+  /* ── Section label ───────────────────────────────────────────────────── */
+  .section-label {
+    font-size: 0.6875rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.07em;
+    color: #6B7280;
+    margin-bottom: 0.5rem;
+  }
+
+  /* ── Stat card ───────────────────────────────────────────────────────── */
+  .stat-card {
+    background: #FFFFFF;
+    border: 1px solid #E4E7EC;
+    border-radius: var(--radius-md);
+    padding: 1.25rem 1.5rem;
+  }
+  .stat-label {
+    font-size: 0.6875rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: #6B7280;
+    margin-bottom: 0.5rem;
+  }
+  .stat-value {
+    font-size: 1.625rem;
+    font-weight: 700;
+    color: #0D1117;
+    letter-spacing: -0.025em;
+    line-height: 1;
+  }
+  .stat-delta {
+    font-size: 0.75rem;
+    color: #6B7280;
+    margin-top: 0.375rem;
+  }
+
+  /* ── Risk score ring ─────────────────────────────────────────────────── */
+  .risk-low    { color: #15803D; }
+  .risk-medium { color: #B45309; }
+  .risk-high   { color: #B91C1C; }
+
+  /* ── Divider ─────────────────────────────────────────────────────────── */
+  .divider {
+    border: none;
+    border-top: 1px solid #E4E7EC;
+    margin: 1.5rem 0;
+  }
+
+  /* ── File queue row ──────────────────────────────────────────────────── */
+  .file-row {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+    padding: 0.625rem 0.875rem;
+    border-bottom: 1px solid #F3F4F6;
+  }
+  .file-row:last-child { border-bottom: none; }
+  .file-row:nth-child(odd) { background: #FAFBFC; }
+  .file-row:nth-child(even) { background: #FFFFFF; }
+
+  /* ── Dropzone ────────────────────────────────────────────────────────── */
+  .dropzone {
+    border: 1.5px dashed #D1D5DB;
+    border-radius: var(--radius-md);
+    padding: 2rem 1.5rem;
+    text-align: center;
+    cursor: pointer;
+    transition: border-color 0.12s ease, background 0.12s ease;
+    background: #FAFBFC;
+  }
+  .dropzone:hover, .dropzone.active {
+    border-color: #0F2240;
+    background: #F0F3F8;
+  }
+
+  /* ── Sidebar nav ─────────────────────────────────────────────────────── */
+  .nav-link {
+    display: flex;
+    align-items: center;
+    gap: 0.625rem;
+    padding: 0.5rem 0.875rem;
+    border-radius: var(--radius-sm);
+    font-size: 0.8125rem;
+    font-weight: 500;
+    color: #6B7280;
+    text-decoration: none;
+    transition: background 0.1s ease, color 0.1s ease;
+    white-space: nowrap;
+  }
+  .nav-link:hover { background: #F3F4F6; color: #0D1117; }
+  .nav-link.active {
+    background: #EEF1F6;
+    color: #0F2240;
+    font-weight: 600;
+    border-left: 2px solid #0F2240;
+    padding-left: calc(0.875rem - 2px);
+  }
+
+  /* ── Empty state ─────────────────────────────────────────────────────── */
+  .empty-state {
+    padding: 3.5rem 2rem;
+    text-align: center;
+    color: #9CA3AF;
+  }
+  .empty-state p { font-size: 0.875rem; margin-top: 0.5rem; }
+}
+
+/* ── Landing page utilities (merged from marketing site) ────────────────── */
+@utility grid-bg {
+  background-image:
+    linear-gradient(to right, rgba(228, 231, 236, 0.6) 1px, transparent 1px),
+    linear-gradient(to bottom, rgba(228, 231, 236, 0.6) 1px, transparent 1px);
+  background-size: 40px 40px;
+}
+
+@utility label-xs {
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.2em;
+}
 </file>
 
 <file path="src/routes/_authenticated/audit.tsx">

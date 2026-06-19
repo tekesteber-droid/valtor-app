@@ -1,5 +1,6 @@
 import { createFileRoute, Link } from "@tanstack/react-router";
 import { Cpu, ShieldCheck, BarChart3, Globe, ArrowRight, Activity, AlertTriangle } from "lucide-react";
+import { HeroBuildingScene } from "@/components/HeroBuildingScene";
 
 export const Route = createFileRoute("/")({
   head: () => ({
@@ -26,6 +27,13 @@ function IconBox({ children }: { children: React.ReactNode }) {
 }
 
 function Index() {
+  // Scroll to the Engineering Readout / analytics section
+  const scrollToAnalytics = () => {
+    document
+      .getElementById("engineering-readout")
+      ?.scrollIntoView({ behavior: "smooth", block: "start" });
+  };
+
   return (
     <div className="min-h-screen bg-white text-slate-900 font-sans">
       {/* NAV */}
@@ -60,54 +68,85 @@ function Index() {
         </div>
       </header>
 
-      {/* HERO */}
-      <section className="relative border-b border-slate-200">
-        <div className="absolute inset-0 grid-bg pointer-events-none" />
-        <div className="relative mx-auto max-w-7xl px-6 py-24 md:py-32">
-          <div className="mb-10 flex items-center gap-3">
-            <span className="inline-block h-1.5 w-1.5 bg-indigo-600" />
-            <Label>System Online — Index v1.0.4</Label>
-          </div>
+      {/* HERO
+          overflow-visible so the BIM canvas can bleed outside the section
+          boundary without being clipped. The grid-bg sits on its own
+          overflow-hidden layer so it stays contained.
+      */}
+      <section className="relative border-b border-slate-200 overflow-visible">
+        {/* Grid background — contained to its own layer */}
+        <div className="absolute inset-0 grid-bg pointer-events-none overflow-hidden" />
 
-          <h1 className="max-w-5xl text-5xl font-black uppercase tracking-tighter leading-[0.95] text-slate-900 md:text-7xl lg:text-[88px]">
-            Quantifying<br />Construction<br />
-            <span className="text-slate-400">Bid Risk.</span>
-          </h1>
+        <div className="relative mx-auto max-w-7xl px-6 py-20 md:py-28">
+          <div className="grid grid-cols-1 items-center gap-10 lg:grid-cols-[1fr_520px]">
 
-          <p className="mt-10 max-w-xl text-base leading-relaxed text-slate-600 md:text-lg">
-            The industrial standard for neural BoQ analysis and infrastructure
-            tender evaluation. Built for operators of national-scale
-            procurement programs.
-          </p>
-
-          <div className="mt-12 flex flex-wrap items-center gap-3">
-            <Link
-              to="/auth"
-              className="label-xs flex items-center gap-3 border border-slate-900 bg-slate-900 px-6 py-4 text-white transition-colors hover:border-indigo-600 hover:bg-indigo-600"
-            >
-              Initiate System Audit
-              <ArrowRight className="h-3.5 w-3.5" strokeWidth={2.5} />
-            </Link>
-            <button className="label-xs border border-slate-200 bg-white px-6 py-4 text-slate-900 transition-colors hover:border-slate-900">
-              View Technical Brief
-            </button>
-          </div>
-
-          {/* spec strip */}
-          <div className="mt-20 grid grid-cols-2 gap-px border border-slate-200 bg-slate-200 md:grid-cols-4">
-            {[
-              ["Tender Volume", "$12.4B"],
-              ["Active Pipelines", "184"],
-              ["Risk Models", "27"],
-              ["Latency", "1.2s"],
-            ].map(([k, v]) => (
-              <div key={k} className="bg-white px-5 py-5">
-                <Label>{k}</Label>
-                <div className="mt-2 font-mono text-2xl font-bold tracking-tight text-slate-900">
-                  {v}
-                </div>
+            {/* ── LEFT ── */}
+            <div>
+              <div className="mb-10 flex items-center gap-3">
+                <span className="inline-block h-1.5 w-1.5 bg-indigo-600" />
+                <Label>System Online — Index v1.0.4</Label>
               </div>
-            ))}
+
+              <h1 className="max-w-5xl text-5xl font-black uppercase tracking-tighter leading-[0.95] text-slate-900 md:text-7xl lg:text-[80px]">
+                Quantifying<br />Construction<br />
+                <span className="text-slate-400">Bid Risk.</span>
+              </h1>
+
+              <p className="mt-10 max-w-xl text-base leading-relaxed text-slate-600 md:text-lg">
+                The industrial standard for neural BoQ analysis and infrastructure
+                tender evaluation. Built for operators of national-scale
+                procurement programs.
+              </p>
+
+              <div className="mt-12 flex flex-wrap items-center gap-3">
+                <Link
+                  to="/auth"
+                  className="label-xs flex items-center gap-3 border border-slate-900 bg-slate-900 px-6 py-4 text-white transition-colors hover:border-indigo-600 hover:bg-indigo-600"
+                >
+                  Initiate System Audit
+                  <ArrowRight className="h-3.5 w-3.5" strokeWidth={2.5} />
+                </Link>
+
+                {/* Scrolls smoothly to the Engineering Readout section */}
+                <button
+                  onClick={scrollToAnalytics}
+                  className="label-xs border border-slate-200 bg-white px-6 py-4 text-slate-900 transition-colors hover:border-slate-900 cursor-pointer"
+                >
+                  View Technical Brief
+                </button>
+              </div>
+
+              {/* spec strip */}
+              <div className="mt-20 grid grid-cols-2 gap-px border border-slate-200 bg-slate-200 md:grid-cols-4">
+                {[
+                  ["Tender Volume", "$12.4B"],
+                  ["Active Pipelines", "184"],
+                  ["Risk Models", "27"],
+                  ["Latency", "1.2s"],
+                ].map(([k, v]) => (
+                  <div key={k} className="bg-white px-5 py-5">
+                    <Label>{k}</Label>
+                    <div className="mt-2 font-mono text-2xl font-bold tracking-tight text-slate-900">
+                      {v}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            {/* ── RIGHT: BIM scene ──
+                overflow-visible removes the invisible rectangular clip that was
+                cutting the canvas drawing surface to the column bounds.
+                The vignette overlay is removed — the scene already renders a
+                transparent background so the page bg shows through naturally.
+            */}
+            <div
+              className="relative hidden lg:flex items-center justify-center"
+              style={{ height: "560px", overflow: "visible" }}
+            >
+              <HeroBuildingScene />
+            </div>
+
           </div>
         </div>
       </section>
@@ -172,8 +211,8 @@ function Index() {
         </div>
       </section>
 
-      {/* ENGINEERING READOUT */}
-      <section className="border-b border-slate-200 bg-zinc-50">
+      {/* ENGINEERING READOUT — scroll target for "View Technical Brief" */}
+      <section id="engineering-readout" className="border-b border-slate-200 bg-zinc-50">
         <div className="mx-auto max-w-7xl px-6 py-24">
           <div className="mb-12 flex items-center gap-2">
             <span className="inline-block h-1.5 w-1.5 bg-indigo-600" />
@@ -207,7 +246,6 @@ function Index() {
 
             {/* Readout panel */}
             <div className="border border-slate-300 bg-white">
-              {/* terminal header */}
               <div className="flex items-center justify-between border-b border-slate-300 bg-slate-900 px-5 py-3">
                 <div className="flex items-center gap-3">
                   <Activity className="h-3.5 w-3.5 text-indigo-400" strokeWidth={2.5} />
@@ -248,7 +286,6 @@ function Index() {
                   </div>
                 </div>
 
-                {/* bar */}
                 <div className="mt-6 h-1.5 w-full bg-slate-100">
                   <div className="h-full bg-indigo-600" style={{ width: "67.4%" }} />
                 </div>
@@ -259,7 +296,6 @@ function Index() {
                 </div>
               </div>
 
-              {/* line items */}
               <div className="divide-y divide-slate-200">
                 {[
                   ["Earthworks / Excavation", "+4.20%", "NOMINAL"],
