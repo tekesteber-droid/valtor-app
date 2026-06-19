@@ -318,834 +318,6 @@ function AuthenticatedLayout() {
 }
 </file>
 
-<file path="src/routes/_authenticated/dashboard.tsx">
-import { createFileRoute, Link } from "@tanstack/react-router";
-import { useAudits } from "@/integrations/supabase/audits";
-import { useEffect, useState, useRef } from "react";
-import {
-  RadarChart, Radar, PolarGrid, PolarAngleAxis, ResponsiveContainer,
-  BarChart, Bar, XAxis, YAxis, Tooltip, Cell, ReferenceLine,
-  LineChart, Line, Area, AreaChart,
-  ScatterChart, Scatter, CartesianGrid,
-} from "recharts";
-import {
-  AlertTriangle, TrendingUp, FileSearch, CheckCircle2,
-  Zap, Shield, AlertOctagon, DollarSign, Activity,
-  ChevronRight, BarChart2, Flame, FileText, Table2,
-} from "lucide-react";
-
-export const Route = createFileRoute("/_authenticated/dashboard")({
-  head: () => ({ meta: [{ title: "Command Center — Valtor" }] }),
-  component: CommandCenter,
-});
-
-// ─── Helpers ────────────────────────────────────────────────────────────────
-
-function fmtEtb(n: number) {
-  if (n >= 1_000_000_000) return `${(n / 1_000_000_000).toFixed(2)}B`;
-  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(0)}M`;
-  return Math.round(n).toLocaleString();
-}
-
-function riskColor(score: number | null) {
-  if (score === null) return "#6B7280";
-  if (score < 40) return "#10B981";
-  if (score < 65) return "#F59E0B";
-  return "#EF4444";
-}
-
-function riskLabel(score: number | null) {
-  if (score === null) return "—";
-  if (score < 40) return "LOW";
-  if (score < 65) return "MEDIUM";
-  return "HIGH";
-}
-
-// ─── Simulated live market data (replace with real API in production) ────────
-
-const MARKET_DATA = {
-  etbUsd: 57.42,
-  etbEur: 62.18,
-  rebar: 85400,
-  cement: 1240,
-  diesel: 78.5,
-  rebarChg: 8.2,
-  cementChg: 5.7,
-  dieselChg: -1.2,
-  forexSparkUsd: [52.1,52.8,53.4,54.0,54.8,55.2,55.9,56.2,56.8,57.1,57.42],
-  forexSparkEur: [57.9,58.4,59.1,59.5,60.0,60.4,61.0,61.5,62.0,62.1,62.18],
-};
-
-// ─── KPI Card ────────────────────────────────────────────────────────────────
-
-function KpiCard({ label, value, color, sub }: { label: string; value: string; color: string; sub?: string }) {
-  const [displayed, setDisplayed] = useState("0");
-  const targetRef = useRef(value);
-
-  useEffect(() => {
-    targetRef.current = value;
-    const numeric = parseFloat(value.replace(/[^0-9.]/g, ""));
-    if (isNaN(numeric)) { setDisplayed(value); return; }
-    const suffix = value.replace(/[0-9.]/g, "");
-    let frame = 0;
-    const frames = 36;
-    const tick = () => {
-      frame++;
-      const v = numeric * (frame / frames);
-      setDisplayed((Number.isInteger(numeric) ? Math.round(v) : v.toFixed(2)) + suffix);
-      if (frame < frames) requestAnimationFrame(tick);
-    };
-    requestAnimationFrame(tick);
-  }, [value]);
-
-  return (
-    <div style={{
-      background: "var(--bg3,#1A2332)", border: "1px solid var(--border,rgba(255,255,255,0.07))",
-      borderRadius: 6, padding: "12px 16px",
-    }}>
-      <div style={{ fontSize: 9, textTransform: "uppercase", letterSpacing: "1px", color: "#556070", marginBottom: 4 }}>
-        {label}
-      </div>
-      <div style={{ fontFamily: "var(--font-mono,'JetBrains Mono','Courier New',monospace)", fontSize: 22, fontWeight: 700, color, lineHeight: 1 }}>
-        {displayed}
-      </div>
-      {sub && <div style={{ fontSize: 9, color: "#556070", marginTop: 3 }}>{sub}</div>}
-    </div>
-  );
-}
-
-// ─── Sparkline (SVG) ─────────────────────────────────────────────────────────
-
-function Sparkline({ data, color }: { data: number[]; color: string }) {
-  const min = Math.min(...data);
-  const max = Math.max(...data);
-  const w = 180, h = 32;
-  const pts = data.map((v, i) => {
-    const x = Math.round((i / (data.length - 1)) * w);
-    const y = Math.round(h - ((v - min) / (max - min || 1)) * h * 0.85 - 2);
-    return `${x},${y}`;
-  }).join(" ");
-  return (
-    <svg viewBox={`0 0 ${w} ${h}`} width="100%" height={h} preserveAspectRatio="none"
-      aria-label="Price trend sparkline">
-      <polyline points={pts} fill="none" stroke={color} strokeWidth="1.5" />
-    </svg>
-  );
-}
-
-// ─── Radar chart data builder ─────────────────────────────────────────────────
-
-function buildRadarData(analysis: any) {
-  if (!analysis) return [
-    { subject: "Technical", A: 50 }, { subject: "Safety", A: 50 },
-    { subject: "Equipment", A: 50 }, { subject: "Timeline", A: 50 },
-    { subject: "Regulatory", A: 50 },
-  ];
-  const risk = Number(analysis.risk_score ?? 50);
-  const base = 100 - risk;
-  return [
-    { subject: "Technical", A: Math.min(100, base + 10) },
-    { subject: "Safety", A: Math.min(100, base + 5) },
-    { subject: "Equipment", A: Math.max(20, base - 5) },
-    { subject: "Timeline", A: Math.max(20, base - 10) },
-    { subject: "Regulatory", A: Math.min(100, base + 8) },
-  ];
-}
-
-// ─── BoQ Variance Bars ────────────────────────────────────────────────────────
-
-function BoqVarianceBars({ analysis }: { analysis: any }) {
-  const variance = analysis?.market_variance ?? [];
-  if (!variance.length) {
-    const synth = [
-      { item: "Preliminaries", variance: 28 },
-      { item: "Earthworks", variance: -5 },
-      { item: "Concrete Wks", variance: 18 },
-      { item: "Structural", variance: -12 },
-      { item: "Electrical", variance: 22 },
-    ];
-    return <BoqBars data={synth} />;
-  }
-  const data = variance.slice(0, 6).map((v: any) => ({
-    item: String(v.item || v.description || "Bill").slice(0, 14),
-    variance: Number(v.variance_percent ?? v.percentage ?? 0),
-  }));
-  return <BoqBars data={data} />;
-}
-
-function BoqBars({ data }: { data: { item: string; variance: number }[] }) {
-  return (
-    <div>
-      <div style={{ fontSize: 9, color: "#556070", marginBottom: 6, textTransform: "uppercase", letterSpacing: "0.8px" }}>
-        Your rates vs market avg (%). <span style={{ color: "#EF4444" }}>Red = &gt;15% above market</span>
-      </div>
-      {data.map(d => {
-        const pct = Math.round(d.variance);
-        const isWarn = Math.abs(pct) > 15;
-        const color = pct > 15 ? "#EF4444" : pct > 0 ? "#F59E0B" : "#10B981";
-        const w = Math.min(Math.abs(pct) * 2.5, 100);
-        return (
-          <div key={d.item} style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 5 }}>
-            <div style={{ fontSize: 10, color: "#8B9BAD", width: 80, flexShrink: 0 }}>{d.item}</div>
-            <div style={{ flex: 1, height: 12, background: "#1A2332", borderRadius: 2, position: "relative", overflow: "hidden" }}>
-              <div style={{ position: "absolute", left: pct < 0 ? `${50 - w/2}%` : "50%", width: `${w/2}%`, height: "100%", background: color, borderRadius: 2 }} />
-              <div style={{ position: "absolute", left: "50%", width: 1, height: "100%", background: "#556070" }} />
-            </div>
-            <div style={{ fontFamily: "monospace", fontSize: 10, color: isWarn ? color : "#8B9BAD", fontWeight: isWarn ? 700 : 400, width: 38, textAlign: "right" }}>
-              {pct > 0 ? "+" : ""}{pct}%
-            </div>
-          </div>
-        );
-      })}
-    </div>
-  );
-}
-
-// ─── Legal Landmine Icons ─────────────────────────────────────────────────────
-
-function LegalLandmines({ analysis }: { analysis: any }) {
-  const traps = analysis?.contractual_traps ?? [];
-  const mines = traps.length > 0 ? traps.slice(0, 4).map((t: any) => ({
-    label: String(t.clause || t.description || t).slice(0, 22),
-    type: String(t.type || t).toLowerCase(),
-  })) : [];
-
-  const hasLD = mines.some(m => m.type.includes("ld") || m.type.includes("liquidat") || m.label.toLowerCase().includes("ld"));
-  const hasRetention = mines.some(m => m.type.includes("retain") || m.label.toLowerCase().includes("retain"));
-  const hasEscalation = mines.some(m => m.type.includes("escal") || m.label.toLowerCase().includes("escal"));
-
-  const badges: { icon: React.ReactNode; label: string; color: string; bg: string }[] = [];
-  if (hasLD || mines.length > 0) badges.push({ icon: <AlertOctagon size={10} />, label: "LD EXPOSURE", color: "#EF4444", bg: "rgba(239,68,68,0.1)" });
-  if (hasRetention) badges.push({ icon: <Shield size={10} />, label: "RETENTION GAP", color: "#F59E0B", bg: "rgba(245,158,11,0.1)" });
-  if (hasEscalation) badges.push({ icon: <TrendingUp size={10} />, label: "NO ESCALATION", color: "#06B6D4", bg: "rgba(6,182,212,0.1)" });
-
-  if (!badges.length && mines.length > 0) {
-    mines.forEach(m => badges.push({ icon: <AlertTriangle size={10} />, label: m.label.toUpperCase().slice(0, 18), color: "#F59E0B", bg: "rgba(245,158,11,0.1)" }));
-  }
-
-  if (!badges.length) return (
-    <div style={{ fontSize: 10, color: "#10B981", fontWeight: 600 }}>✔ No legal landmines detected</div>
-  );
-
-  return (
-    <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
-      {badges.map(b => (
-        <div key={b.label} style={{
-          display: "flex", alignItems: "center", gap: 4,
-          background: b.bg, border: `1px solid ${b.color}40`,
-          color: b.color, fontSize: 10, padding: "3px 8px", borderRadius: 3, fontWeight: 600
-        }}>
-          {b.icon}{b.label}
-        </div>
-      ))}
-    </div>
-  );
-}
-
-// ─── Cashflow Curve ──────────────────────────────────────────────────────────
-
-function CashflowCurve({ analysis }: { analysis: any }) {
-  const risk = Number(analysis?.risk_score ?? 50);
-  const data = [0, 10, 20, 30, 40, 50, 60, 70, 80, 90, 100].map(pct => {
-    const frontLoadFactor = risk > 60 ? 0.45 : 0.28;
-    const y = pct === 0 ? 0 : Math.min(100, Math.round(
-      (pct < 20 ? pct * frontLoadFactor * 2 : 20 * frontLoadFactor * 2 + (pct - 20) * (100 - 20 * frontLoadFactor * 2) / 80)
-    ));
-    return { pct, cashflow: y };
-  });
-  const frontLoad = risk > 60;
-
-  return (
-    <div style={{ position: "relative" }}>
-      {frontLoad && (
-        <div style={{
-          position: "absolute", top: 4, right: 4, zIndex: 10,
-          background: "rgba(245,158,11,0.15)", border: "1px solid rgba(245,158,11,0.4)",
-          color: "#F59E0B", fontSize: 9, padding: "2px 7px", borderRadius: 3, fontWeight: 700,
-          display: "flex", alignItems: "center", gap: 4,
-        }}>
-          <AlertTriangle size={9} /> FRONT-LOAD DETECTED
-        </div>
-      )}
-      <ResponsiveContainer width="100%" height={90}>
-        <AreaChart data={data} margin={{ top: 16, right: 4, bottom: 0, left: 0 }}>
-          <defs>
-            <linearGradient id="cfGrad" x1="0" y1="0" x2="0" y2="1">
-              <stop offset="5%" stopColor="#06B6D4" stopOpacity={0.15} />
-              <stop offset="95%" stopColor="#06B6D4" stopOpacity={0} />
-            </linearGradient>
-          </defs>
-          <XAxis dataKey="pct" hide />
-          <YAxis hide domain={[0, 100]} />
-          <Tooltip
-            contentStyle={{ background: "#1A2332", border: "1px solid rgba(255,255,255,0.1)", fontSize: 10 }}
-            formatter={(v: number) => [`${v}%`, "Cashflow"]}
-            labelFormatter={(l) => `Progress: ${l}%`}
-          />
-          <Area type="monotone" dataKey="cashflow" stroke="#06B6D4" strokeWidth={2} fill="url(#cfGrad)" />
-        </AreaChart>
-      </ResponsiveContainer>
-    </div>
-  );
-}
-
-// ─── Risk Heatmap Plot ────────────────────────────────────────────────────────
-
-function RiskHeatmapPlot({ audits }: { audits: any[] }) {
-  const data = audits.map(a => ({
-    name: a.project_name,
-    risk: Number(a.risk_score ?? 50),
-    value: Number(a.contract_value ?? 0) / 1_000_000,
-    fill: riskColor(Number(a.risk_score ?? 50)),
-  }));
-
-  return (
-    <ResponsiveContainer width="100%" height={160}>
-      <ScatterChart margin={{ top: 8, right: 12, bottom: 8, left: 8 }}>
-        <CartesianGrid stroke="rgba(255,255,255,0.04)" />
-        <XAxis dataKey="risk" type="number" domain={[0, 100]} name="Risk"
-          tick={{ fontSize: 9, fill: "#556070" }} label={{ value: "Risk Score →", position: "insideBottom", offset: -2, fontSize: 9, fill: "#556070" }} />
-        <YAxis dataKey="value" name="Value (M ETB)"
-          tick={{ fontSize: 9, fill: "#556070" }} label={{ value: "Value (M)", angle: -90, position: "insideLeft", offset: 10, fontSize: 9, fill: "#556070" }} />
-        <Tooltip
-          cursor={{ strokeDasharray: "3 3", stroke: "#556070" }}
-          contentStyle={{ background: "#1A2332", border: "1px solid rgba(255,255,255,0.1)", fontSize: 10 }}
-          formatter={(value: number, name: string) => [
-            name === "value" ? `${Math.round(value)}M ETB` : Math.round(value),
-            name === "value" ? "Contract Value" : "Risk Score"
-          ]}
-        />
-        {/* Danger zone overlay reference lines */}
-        <ReferenceLine x={70} stroke="rgba(239,68,68,0.3)" strokeDasharray="4 2" label={{ value: "⚠ Dir. Sign", position: "top", fontSize: 8, fill: "#EF4444" }} />
-        <Scatter data={data} fill="#1D6FE8">
-          {data.map((d, i) => <Cell key={i} fill={d.fill} />)}
-        </Scatter>
-      </ScatterChart>
-    </ResponsiveContainer>
-  );
-}
-
-// ─── Resource Gap Chart ───────────────────────────────────────────────────────
-
-function ResourceGapChart({ analysis }: { analysis: any }) {
-  const gaps = [
-    { name: "Excavators", required: 10, listed: analysis?.plant_capacity ? 7 : 4 },
-    { name: "Operators", required: 20, listed: analysis?.plant_capacity ? 16 : 10 },
-    { name: "Trucks", required: 12, listed: analysis?.plant_capacity ? 9 : 6 },
-    { name: "Engineers", required: 8, listed: analysis?.plant_capacity ? 7 : 5 },
-  ];
-  const data = gaps.map(g => ({
-    name: g.name, required: g.required, gap: Math.max(0, g.required - g.listed),
-    listed: g.listed,
-  }));
-  return (
-    <ResponsiveContainer width="100%" height={130}>
-      <BarChart data={data} layout="vertical" margin={{ left: 60, right: 8, top: 4, bottom: 4 }}>
-        <XAxis type="number" tick={{ fontSize: 9, fill: "#556070" }} />
-        <YAxis dataKey="name" type="category" tick={{ fontSize: 9, fill: "#8B9BAD" }} width={56} />
-        <Tooltip
-          contentStyle={{ background: "#1A2332", border: "1px solid rgba(255,255,255,0.1)", fontSize: 10 }}
-        />
-        <Bar dataKey="listed" name="Listed in Bid" fill="#1D6FE8" stackId="a" radius={[0, 0, 0, 0]} />
-        <Bar dataKey="gap" name="Gap (Missing)" fill="#EF4444" stackId="a" radius={[0, 3, 3, 0]} />
-      </BarChart>
-    </ResponsiveContainer>
-  );
-}
-
-// ─── What-If Slider Panel ─────────────────────────────────────────────────────
-
-function WhatIfPanel({ totalValue }: { totalValue: number }) {
-  const [margin, setMargin] = useState(15);
-  const [cementHike, setCementHike] = useState(0);
-  const [stressActive, setStressActive] = useState(false);
-
-  const cementShare = 0.22;
-  const adjustedMargin = Math.max(0, margin - cementHike * cementShare / 100 * margin);
-  const projectedNet = Math.round(totalValue * adjustedMargin / 100);
-
-  const netColor = adjustedMargin > 10 ? "#10B981" : adjustedMargin > 6 ? "#F59E0B" : "#EF4444";
-
-  const triggerStress = () => {
-    setStressActive(!stressActive);
-    if (!stressActive) setCementHike(20);
-    else setCementHike(0);
-  };
-
-  return (
-    <div style={{ padding: "10px 14px" }}>
-      <div style={{ marginBottom: 10 }}>
-        <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 4 }}>
-          <div style={{ fontSize: 10, color: "#8B9BAD" }}>Target Margin %</div>
-          <div style={{ fontFamily: "monospace", fontSize: 11, color: "#06B6D4", fontWeight: 700 }}>{margin}%</div>
-        </div>
-        <input type="range" min={5} max={30} value={margin} step={1}
-          onChange={e => setMargin(Number(e.target.value))}
-          style={{ width: "100%", accentColor: "#1D6FE8" }} />
-      </div>
-      <div style={{ marginBottom: 10 }}>
-        <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 4 }}>
-          <div style={{ fontSize: 10, color: "#8B9BAD" }}>Cement Price Hike %</div>
-          <div style={{ fontFamily: "monospace", fontSize: 11, color: cementHike > 15 ? "#EF4444" : "#06B6D4", fontWeight: 700 }}>{cementHike}%</div>
-        </div>
-        <input type="range" min={0} max={50} value={cementHike} step={5}
-          onChange={e => setCementHike(Number(e.target.value))}
-          style={{ width: "100%", accentColor: "#EF4444" }} />
-      </div>
-      <div style={{
-        background: "#1A2332", border: "1px solid rgba(255,255,255,0.07)", borderRadius: 4,
-        padding: "8px 12px", display: "flex", justifyContent: "space-between", alignItems: "center",
-        marginBottom: 8,
-      }}>
-        <div>
-          <div style={{ fontSize: 9, color: "#556070", textTransform: "uppercase", letterSpacing: "0.8px" }}>Adjusted Margin</div>
-          <div style={{ fontFamily: "monospace", fontSize: 14, fontWeight: 700, color: netColor }}>
-            {adjustedMargin.toFixed(1)}%
-          </div>
-        </div>
-        <div style={{ textAlign: "right" }}>
-          <div style={{ fontSize: 9, color: "#556070", textTransform: "uppercase", letterSpacing: "0.8px" }}>Net Projected</div>
-          <div style={{ fontFamily: "monospace", fontSize: 14, fontWeight: 700, color: netColor }}>
-            +{fmtEtb(projectedNet)} ETB
-          </div>
-        </div>
-      </div>
-      <button
-        onClick={triggerStress}
-        style={{
-          display: "flex", alignItems: "center", gap: 6, width: "100%",
-          background: stressActive ? "rgba(239,68,68,0.2)" : "rgba(239,68,68,0.08)",
-          border: `1px solid ${stressActive ? "rgba(239,68,68,0.6)" : "rgba(239,68,68,0.25)"}`,
-          color: "#EF4444", fontSize: 10, fontWeight: 700, letterSpacing: "0.5px",
-          padding: "7px 10px", borderRadius: 4, cursor: "pointer", textTransform: "uppercase",
-        }}
-      >
-        <Flame size={12} /> Simulate 20% Cement Price Hike
-      </button>
-      {stressActive && (
-        <div style={{ marginTop: 6, padding: "8px 10px", background: "rgba(239,68,68,0.08)", border: "1px solid rgba(239,68,68,0.2)", borderRadius: 4, fontSize: 10, color: "#EF4444", lineHeight: 1.5 }}>
-          ⚠ Margin collapses from {margin}% → {adjustedMargin.toFixed(1)}%. Projects with margin &lt;8% turn unprofitable. Director sign-off required.
-        </div>
-      )}
-    </div>
-  );
-}
-
-// ─── Main Command Center ──────────────────────────────────────────────────────
-
-function CommandCenter() {
-  const { audits, loading } = useAudits();
-  const [selectedAudit, setSelectedAudit] = useState<any | null>(null);
-  const [time, setTime] = useState(new Date());
-
-  useEffect(() => {
-    const t = setInterval(() => setTime(new Date()), 1000);
-    return () => clearInterval(t);
-  }, []);
-
-  // KPI calculations
-  const total = audits.length;
-  const totalValue = audits.reduce((s, a) => s + Number(a.contract_value || 0), 0);
-  const scored = audits.filter(a => a.risk_score != null);
-  const avgRisk = scored.length ? Math.round(scored.reduce((s, a) => s + Number(a.risk_score!), 0) / scored.length) : 0;
-  const proceed = audits.filter(a => a.analysis?.recommendation === "PROCEED").length;
-  const dangerZone = audits.filter(a => Number(a.risk_score ?? 0) > 70 && Number(a.contract_value ?? 0) > 400_000_000);
-
-  const timeStr = time.toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit", second: "2-digit" });
-
-  // Panel styles
-  const panel = {
-    background: "#131920", border: "1px solid rgba(255,255,255,0.07)",
-    borderRadius: 6, overflow: "hidden" as const,
-  };
-  const panelHdr = {
-    display: "flex" as const, alignItems: "center" as const, justifyContent: "space-between" as const,
-    padding: "9px 14px", borderBottom: "1px solid rgba(255,255,255,0.07)",
-    background: "#1A2332",
-  };
-  const panelTitle = { fontSize: 9, fontWeight: 700, textTransform: "uppercase" as const, letterSpacing: "1.5px", color: "#8B9BAD" };
-  const mono = { fontFamily: "monospace" };
-  const sectionLbl = { fontSize: 9, textTransform: "uppercase" as const, letterSpacing: "1px", color: "#556070", marginBottom: 6, fontWeight: 700 };
-
-  return (
-    <div style={{ background: "#0D1117", minHeight: "100vh", color: "#E8EDF3", fontFamily: "Inter, system-ui, sans-serif", fontSize: 13 }}>
-
-      {/* ── Top Bar ──────────────────────────────────────────────────── */}
-      <div style={{
-        display: "flex", alignItems: "center", justifyContent: "space-between",
-        padding: "0 20px", height: 44, background: "#0D1117",
-        borderBottom: "1px solid rgba(255,255,255,0.07)", marginBottom: 10,
-      }}>
-        <div style={{ display: "flex", alignItems: "center", gap: 16 }}>
-          <div style={{ ...mono, fontSize: 13, fontWeight: 700, letterSpacing: 3 }}>VALTOR</div>
-          <div style={{ width: 1, height: 24, background: "rgba(255,255,255,0.07)" }} />
-          <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-            <div style={{ width: 7, height: 7, borderRadius: "50%", background: "#10B981" }} />
-            <div style={{ fontSize: 10, color: "#556070", textTransform: "uppercase" as const, letterSpacing: "1px" }}>
-              Command Center — Live
-            </div>
-          </div>
-          <div style={{ width: 1, height: 24, background: "rgba(255,255,255,0.07)" }} />
-          <div style={{ fontSize: 10, color: "#556070" }}>
-            Pipeline: <span style={{ color: "#E8EDF3" }}>{total} Projects</span>
-          </div>
-          <div style={{ fontSize: 10, color: "#556070" }}>
-            ETB Exposure: <span style={{ ...mono, color: "#06B6D4" }}>{fmtEtb(totalValue)} ETB</span>
-          </div>
-        </div>
-        <div style={{ display: "flex", alignItems: "center", gap: 14 }}>
-          <div style={{ ...mono, fontSize: 11, color: "#556070" }}>ADDIS ABABA — {timeStr} EAT</div>
-          {dangerZone.length > 0 && (
-            <div style={{ background: "rgba(239,68,68,0.15)", border: "1px solid rgba(239,68,68,0.3)", color: "#EF4444", fontSize: 10, padding: "2px 8px", borderRadius: 3, fontWeight: 600 }}>
-              {dangerZone.length} DANGER ZONE
-            </div>
-          )}
-          <Link to="/audit" style={{
-            background: "#1D6FE8", color: "white", border: "none", padding: "6px 14px",
-            fontSize: 11, fontWeight: 600, letterSpacing: "0.5px", cursor: "pointer",
-            borderRadius: 4, display: "flex", alignItems: "center", gap: 6,
-            textTransform: "uppercase" as const, textDecoration: "none",
-          }}>
-            <FileSearch size={12} /> New Audit
-          </Link>
-        </div>
-      </div>
-
-      <div style={{ padding: "0 12px 12px", display: "grid", gridTemplateColumns: "260px 1fr 220px", gap: 8 }}>
-
-        {/* ── LEFT COLUMN ──────────────────────────────────────────────── */}
-        <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-
-          {/* KPI Grid */}
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 6 }}>
-            <KpiCard label="Live Pipeline" value={fmtEtb(totalValue)} color="#06B6D4" sub="ETB total value" />
-            <KpiCard label="Audited Projects" value={String(total)} color="#E8EDF3" sub="in workspace" />
-            <KpiCard label="Avg Risk Score" value={String(avgRisk)} color={riskColor(avgRisk)} sub="portfolio score" />
-            <KpiCard label="AI: Proceed" value={String(proceed)} color="#10B981" sub="recommended" />
-          </div>
-
-          {/* Pipeline Financials */}
-          <div style={panel}>
-            <div style={panelHdr}>
-              <div style={panelTitle}>Pipeline Financials</div>
-              <div style={{ ...mono, fontSize: 10, color: "#06B6D4" }}>ETB</div>
-            </div>
-            <div style={{ padding: "10px 14px" }}>
-              {[
-                { label: "Live Tenders", pct: 100, color: "#06B6D4" },
-                { label: "Audited", pct: Math.round((proceed / Math.max(total, 1)) * 100 + 40), color: "#1D6FE8" },
-                { label: "Danger Zone", pct: Math.round((dangerZone.length / Math.max(total, 1)) * 100), color: "#EF4444" },
-                { label: "Recommended", pct: Math.round((proceed / Math.max(total, 1)) * 100), color: "#10B981" },
-              ].map(r => (
-                <div key={r.label} style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 6 }}>
-                  <div style={{ fontSize: 10, color: "#8B9BAD", width: 70, flexShrink: 0 }}>{r.label}</div>
-                  <div style={{ flex: 1, height: 8, background: "#1A2332", borderRadius: 2, overflow: "hidden" }}>
-                    <div style={{ width: `${Math.min(r.pct, 100)}%`, height: "100%", background: r.color, borderRadius: 2, transition: "width 1s ease" }} />
-                  </div>
-                  <div style={{ ...mono, fontSize: 10, color: r.color, width: 32, textAlign: "right" }}>{r.pct}%</div>
-                </div>
-              ))}
-            </div>
-          </div>
-
-          {/* Risk Heatmap */}
-          <div style={panel}>
-            <div style={panelHdr}>
-              <div style={panelTitle}>Risk Heatmap</div>
-              {dangerZone.length > 0 && (
-                <div style={{ fontSize: 9, color: "#EF4444", fontWeight: 700 }}>⚠ {dangerZone.length} in Danger Zone</div>
-              )}
-            </div>
-            <div style={{ padding: "4px 8px 8px" }}>
-              {loading ? (
-                <div style={{ height: 160, display: "flex", alignItems: "center", justifyContent: "center", color: "#556070", fontSize: 11 }}>Loading…</div>
-              ) : audits.length === 0 ? (
-                <div style={{ height: 160, display: "flex", alignItems: "center", justifyContent: "center", color: "#556070", fontSize: 11 }}>No audits yet — run your first bid audit</div>
-              ) : (
-                <RiskHeatmapPlot audits={audits} />
-              )}
-            </div>
-          </div>
-
-          {/* Win/Loss by Risk Band */}
-          <div style={panel}>
-            <div style={panelHdr}><div style={panelTitle}>Win Rate by Risk Band</div></div>
-            <div style={{ padding: "8px 14px" }}>
-              {[{ band: "00–35", pct: 84, color: "#10B981" }, { band: "36–60", pct: 61, color: "#F59E0B" }, { band: "61–80", pct: 34, color: "#EF4444" }, { band: "81+", pct: 9, color: "#EF4444" }].map(w => (
-                <div key={w.band} style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 5 }}>
-                  <div style={{ ...mono, fontSize: 9, color: "#556070", width: 36 }}>{w.band}</div>
-                  <div style={{ flex: 1, height: 10, background: "#1A2332", borderRadius: 2, overflow: "hidden" }}>
-                    <div style={{ width: `${w.pct}%`, height: "100%", background: w.color, borderRadius: 2 }} />
-                  </div>
-                  <div style={{ fontSize: 9, color: w.color, width: 28, textAlign: "right", fontWeight: 700 }}>{w.pct}%</div>
-                </div>
-              ))}
-              <div style={{ fontSize: 9, color: "#556070", marginTop: 4 }}>Historical correlation of risk scores → profitability</div>
-            </div>
-          </div>
-        </div>
-
-        {/* ── CENTER COLUMN ──────────────────────────────────────────────── */}
-        <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-
-          {/* Project Triage Table */}
-          <div style={panel}>
-            <div style={panelHdr}>
-              <div style={panelTitle}>Project Triage — Active Pipeline</div>
-              <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-                <div style={{ ...mono, fontSize: 10, color: "#556070" }}>{total} projects</div>
-                <Link to="/history" style={{ fontSize: 9, color: "#1D6FE8", display: "flex", alignItems: "center", gap: 2 }}>
-                  View all <ChevronRight size={10} />
-                </Link>
-              </div>
-            </div>
-            <div style={{ maxHeight: 220, overflowY: "auto" }}>
-              {loading ? (
-                <div style={{ padding: "20px", textAlign: "center", color: "#556070", fontSize: 11 }}>Loading pipeline…</div>
-              ) : audits.length === 0 ? (
-                <div style={{ padding: "24px", textAlign: "center", color: "#556070", fontSize: 11 }}>
-                  No audits yet. <Link to="/audit" style={{ color: "#1D6FE8" }}>Run your first bid audit →</Link>
-                </div>
-              ) : audits.map(a => {
-                const isDir = Number(a.risk_score ?? 0) > 70 && Number(a.contract_value ?? 0) > 400_000_000;
-                const isSelected = selectedAudit?.id === a.id;
-                const rec = a.analysis?.recommendation;
-                const recColor = rec === "PROCEED" ? "#10B981" : rec === "DECLINE" ? "#EF4444" : "#F59E0B";
-                return (
-                  <div key={a.id}
-                    onClick={() => setSelectedAudit(isSelected ? null : a)}
-                    style={{
-                      display: "flex", alignItems: "center", padding: "8px 14px",
-                      borderBottom: "1px solid rgba(255,255,255,0.05)", cursor: "pointer",
-                      background: isSelected ? "#1A2332" : "transparent", gap: 10,
-                      transition: "background 0.15s",
-                    }}
-                    onMouseEnter={e => { if (!isSelected) e.currentTarget.style.background = "#131920"; }}
-                    onMouseLeave={e => { if (!isSelected) e.currentTarget.style.background = "transparent"; }}
-                  >
-                    <div style={{ flex: 1, fontSize: 11, fontWeight: 600 }}>{a.project_name}</div>
-                    <div style={{ ...mono, fontSize: 10, color: "#8B9BAD", width: 70, textAlign: "right" }}>
-                      {fmtEtb(Number(a.contract_value ?? 0))} ETB
-                    </div>
-                    <div style={{
-                      ...mono, fontSize: 10, fontWeight: 700, padding: "2px 7px", borderRadius: 3,
-                      background: `${riskColor(Number(a.risk_score ?? null))}18`,
-                      color: riskColor(Number(a.risk_score ?? null)),
-                      border: `1px solid ${riskColor(Number(a.risk_score ?? null))}40`,
-                      minWidth: 36, textAlign: "center",
-                    }}>
-                      {a.risk_score != null ? Math.round(Number(a.risk_score)) : "—"}
-                    </div>
-                    <div style={{ fontSize: 9, fontWeight: 700, color: recColor, letterSpacing: "0.4px", width: 52 }}>
-                      {rec ?? "—"}
-                    </div>
-                    {isDir && (
-                      <div style={{ fontSize: 8, color: "#EF4444", fontWeight: 700, background: "rgba(239,68,68,0.1)", border: "1px solid rgba(239,68,68,0.25)", padding: "1px 5px", borderRadius: 2 }}>
-                        DIR ✍
-                      </div>
-                    )}
-                  </div>
-                );
-              })}
-            </div>
-          </div>
-
-          {/* X-Ray Deep Dive Panel */}
-          <div style={panel}>
-            <div style={panelHdr}>
-              <div style={panelTitle}>
-                {selectedAudit ? `⬛ X-Ray: ${selectedAudit.project_name}` : "⬛ Select a project above for X-Ray Analysis"}
-              </div>
-              {selectedAudit && (
-                <div style={{ ...mono, fontSize: 10, color: riskColor(Number(selectedAudit.risk_score ?? null)) }}>
-                  Risk: {selectedAudit.risk_score != null ? Math.round(Number(selectedAudit.risk_score)) : "—"}/100
-                </div>
-              )}
-            </div>
-            {!selectedAudit ? (
-              <div style={{ padding: "24px", textAlign: "center", color: "#556070", fontSize: 11 }}>
-                Click any project row above to see BoQ Variance, Cashflow Curve, Legal Landmines &amp; Resource Gap
-              </div>
-            ) : (
-              <div style={{ padding: "12px 14px", display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14 }}>
-                <div>
-                  <div style={sectionLbl}>BoQ Variance vs Market</div>
-                  <BoqVarianceBars analysis={selectedAudit.analysis} />
-                </div>
-                <div>
-                  <div style={sectionLbl}>Legal Landmines</div>
-                  <div style={{ marginBottom: 12 }}>
-                    <LegalLandmines analysis={selectedAudit.analysis} />
-                  </div>
-                  <div style={sectionLbl}>Cashflow Curve</div>
-                  <CashflowCurve analysis={selectedAudit.analysis} />
-                </div>
-              </div>
-            )}
-          </div>
-
-          {/* Bottom row: What-If + Radar */}
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
-            <div style={panel}>
-              <div style={panelHdr}>
-                <div style={panelTitle}><Activity size={10} style={{ display: "inline", marginRight: 4 }} />What-If Analysis</div>
-              </div>
-              <WhatIfPanel totalValue={totalValue} />
-            </div>
-
-            <div style={panel}>
-              <div style={panelHdr}>
-                <div style={panelTitle}>Methodology Scorecard</div>
-                <div style={{ fontSize: 9, color: "#556070" }}>{selectedAudit?.project_name?.split(" ").slice(0, 2).join(" ") ?? "— select project —"}</div>
-              </div>
-              <div style={{ padding: "4px" }}>
-                {selectedAudit ? (
-                  <ResponsiveContainer width="100%" height={170}>
-                    <RadarChart data={buildRadarData(selectedAudit.analysis)} margin={{ top: 8, right: 20, bottom: 8, left: 20 }}>
-                      <PolarGrid stroke="rgba(255,255,255,0.06)" />
-                      <PolarAngleAxis dataKey="subject" tick={{ fontSize: 9, fill: "#8B9BAD" }} />
-                      <Radar dataKey="A" stroke="#1D6FE8" fill="#1D6FE8" fillOpacity={0.2} />
-                    </RadarChart>
-                  </ResponsiveContainer>
-                ) : (
-                  <div style={{ height: 170, display: "flex", alignItems: "center", justifyContent: "center", color: "#556070", fontSize: 10 }}>
-                    Select a project to see scorecard
-                  </div>
-                )}
-              </div>
-            </div>
-          </div>
-        </div>
-
-        {/* ── RIGHT COLUMN ──────────────────────────────────────────────── */}
-        <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-
-          {/* Forex Risk */}
-          <div style={panel}>
-            <div style={panelHdr}>
-              <div style={panelTitle}><TrendingUp size={10} style={{ display: "inline", marginRight: 4 }} />Forex Risk Alert</div>
-              <div style={{ fontSize: 9, color: "#EF4444", fontWeight: 700 }}>HIGH RISK</div>
-            </div>
-            <div style={{ padding: "8px 14px" }}>
-              {[
-                { pair: "ETB/USD", rate: MARKET_DATA.etbUsd, chg: "+2.3%", spark: MARKET_DATA.forexSparkUsd },
-                { pair: "ETB/EUR", rate: MARKET_DATA.etbEur, chg: "+3.1%", spark: MARKET_DATA.forexSparkEur },
-              ].map(fx => (
-                <div key={fx.pair}>
-                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", paddingBottom: 2 }}>
-                    <div>
-                      <div style={{ ...mono, fontSize: 11, fontWeight: 700 }}>{fx.pair}</div>
-                      <div style={{ fontSize: 9, fontWeight: 700, color: "#EF4444" }}>▲ {fx.chg} (30d)</div>
-                    </div>
-                    <div style={{ textAlign: "right" }}>
-                      <div style={{ ...mono, fontSize: 12, fontWeight: 700, color: "#EF4444" }}>{fx.rate}</div>
-                      <div style={{ fontSize: 9, color: "#556070" }}>ETB per 1</div>
-                    </div>
-                  </div>
-                  <div style={{ height: 32, marginBottom: 8 }}>
-                    <Sparkline data={fx.spark} color="rgba(239,68,68,0.7)" />
-                  </div>
-                </div>
-              ))}
-              <div style={{ padding: "6px 8px", background: "rgba(239,68,68,0.08)", border: "1px solid rgba(239,68,68,0.2)", borderRadius: 4, fontSize: 9, color: "#EF4444", lineHeight: 1.5 }}>
-                ⚠ Imported plant/machinery projects face 3–5% cost variance from FX drift
-              </div>
-            </div>
-          </div>
-
-          {/* Material Volatility */}
-          <div style={panel}>
-            <div style={panelHdr}>
-              <div style={panelTitle}>Material Volatility</div>
-              <div style={{ ...mono, fontSize: 10, color: "#556070" }}>Addis Ababa</div>
-            </div>
-            <div style={{ padding: "10px 14px" }}>
-              {[
-                { name: "Rebar Steel", price: `${MARKET_DATA.rebar.toLocaleString()} ETB/t`, chg: MARKET_DATA.rebarChg, vol: 72, icon: "🔩" },
-                { name: "Cement (bag)", price: `${MARKET_DATA.cement.toLocaleString()} ETB`, chg: MARKET_DATA.cementChg, vol: 52, icon: "🏗" },
-                { name: "Diesel (L)", price: `${MARKET_DATA.diesel} ETB`, chg: MARKET_DATA.dieselChg, vol: 28, icon: "⛽" },
-              ].map(m => {
-                const chgColor = m.chg > 0 ? "#EF4444" : "#10B981";
-                const barColor = m.vol > 60 ? "#EF4444" : m.vol > 40 ? "#F59E0B" : "#10B981";
-                return (
-                  <div key={m.name} style={{ display: "flex", alignItems: "flex-start", gap: 8, marginBottom: 10 }}>
-                    <div style={{ fontSize: 16 }}>{m.icon}</div>
-                    <div style={{ flex: 1 }}>
-                      <div style={{ display: "flex", justifyContent: "space-between" }}>
-                        <div style={{ fontSize: 10, fontWeight: 700 }}>{m.name}</div>
-                        <div style={{ ...mono, fontSize: 10, color: "#8B9BAD" }}>
-                          {m.price} <span style={{ color: chgColor, fontWeight: 700 }}>{m.chg > 0 ? "▲" : "▼"}{Math.abs(m.chg)}%</span>
-                        </div>
-                      </div>
-                      <div style={{ height: 3, background: "#1A2332", borderRadius: 2, marginTop: 3 }}>
-                        <div style={{ width: `${m.vol}%`, height: "100%", background: barColor, borderRadius: 2 }} />
-                      </div>
-                    </div>
-                  </div>
-                );
-              })}
-              <div style={{ fontSize: 9, color: "#556070" }}>ETB/unit — 30-day volatility index</div>
-            </div>
-          </div>
-
-          {/* Resource Gap */}
-          <div style={{ ...panel, flex: 1 }}>
-            <div style={panelHdr}>
-              <div style={panelTitle}>Plant &amp; Resource Gap</div>
-              <div style={{ fontSize: 9, color: "#556070" }}>{selectedAudit?.project_name?.split(" ").slice(0, 2).join(" ") ?? "select project"}</div>
-            </div>
-            <div style={{ padding: "6px 8px" }}>
-              {selectedAudit ? (
-                <>
-                  <div style={{ fontSize: 9, color: "#556070", marginBottom: 4, padding: "0 6px" }}>
-                    <span style={{ color: "#1D6FE8" }}>■</span> In bid &nbsp; <span style={{ color: "#EF4444" }}>■</span> Gap (missing)
-                  </div>
-                  <ResourceGapChart analysis={selectedAudit.analysis} />
-                </>
-              ) : (
-                <div style={{ padding: "20px", textAlign: "center", color: "#556070", fontSize: 10 }}>Select a project to see resource gap analysis</div>
-              )}
-            </div>
-          </div>
-
-          {/* One-Click Reports */}
-          <div style={panel}>
-            <div style={panelHdr}><div style={panelTitle}>One-Click Reports</div></div>
-            <div style={{ padding: "10px 12px", display: "flex", flexDirection: "column", gap: 6 }}>
-              <Link
-                to="/history"
-                style={{
-                  display: "flex", alignItems: "center", gap: 6, width: "100%",
-                  background: "rgba(139,92,246,0.1)", border: "1px solid rgba(139,92,246,0.3)",
-                  color: "#8B5CF6", fontSize: 10, fontWeight: 700, letterSpacing: "0.5px",
-                  padding: "8px 10px", borderRadius: 4, cursor: "pointer", textTransform: "uppercase" as const,
-                  textDecoration: "none",
-                }}
-              >
-                <FileText size={12} /> Board-Ready PDF Report
-              </Link>
-              <Link
-                to="/history"
-                style={{
-                  display: "flex", alignItems: "center", gap: 6, width: "100%",
-                  background: "rgba(6,182,212,0.08)", border: "1px solid rgba(6,182,212,0.3)",
-                  color: "#06B6D4", fontSize: 10, fontWeight: 700, letterSpacing: "0.5px",
-                  padding: "8px 10px", borderRadius: 4, cursor: "pointer", textTransform: "uppercase" as const,
-                  textDecoration: "none",
-                }}
-              >
-                <Table2 size={12} /> Multi-Sheet Excel Export
-              </Link>
-            </div>
-          </div>
-        </div>
-
-      </div>
-    </div>
-  );
-}
-</file>
-
 <file path="src/routes/_authenticated/history.tsx">
 import { createFileRoute } from "@tanstack/react-router";
 import { useEffect, useRef, useState } from "react";
@@ -1738,17 +910,348 @@ function TenderFeed() {
 </file>
 
 <file path="src/routes/index.tsx">
-import { createFileRoute, redirect } from "@tanstack/react-router";
+import { createFileRoute, Link } from "@tanstack/react-router";
+import { Cpu, ShieldCheck, BarChart3, Globe, ArrowRight, Activity, AlertTriangle } from "lucide-react";
 
 export const Route = createFileRoute("/")({
-  beforeLoad: () => {
-    // Automatically forwards authenticated traffic straight to the dashboard view
-    throw redirect({
-      to: "/dashboard",
-    });
-  },
-  component: () => null,
+  head: () => ({
+    meta: [
+      { title: "Valtor — Bid Intelligence & Infrastructure Risk" },
+      { name: "description", content: "The industrial standard for neural BoQ analysis and infrastructure tender evaluation." },
+      { property: "og:title", content: "Valtor — Bid Intelligence & Infrastructure Risk" },
+      { property: "og:description", content: "Quantifying construction bid risk for industrial procurement." },
+    ],
+  }),
+  component: Index,
 });
+
+function Label({ children }: { children: React.ReactNode }) {
+  return <span className="label-xs text-slate-500">{children}</span>;
+}
+
+function IconBox({ children }: { children: React.ReactNode }) {
+  return (
+    <div className="inline-flex h-9 w-9 items-center justify-center border border-slate-200 bg-white text-slate-900">
+      {children}
+    </div>
+  );
+}
+
+function Index() {
+  return (
+    <div className="min-h-screen bg-white text-slate-900 font-sans">
+      {/* NAV */}
+      <header className="border-b border-slate-200 bg-white">
+        <div className="mx-auto flex max-w-7xl items-center justify-between px-6 py-4">
+          <div className="flex items-center gap-3">
+            <div className="flex h-7 w-7 items-center justify-center bg-slate-900">
+              <div className="h-2 w-2 bg-white" />
+            </div>
+            <span className="text-sm font-black uppercase tracking-[0.2em] text-slate-900">
+              Valtor
+            </span>
+            <span className="ml-3 hidden label-xs text-slate-400 md:inline">
+              / Bid Intelligence System
+            </span>
+          </div>
+          <nav className="flex items-center gap-2">
+            <Link
+              to="/auth"
+              className="label-xs border border-slate-200 bg-white px-4 py-2.5 text-slate-900 transition-colors hover:border-slate-900 hover:bg-slate-900 hover:text-white"
+            >
+              Operator Login
+            </Link>
+            <Link
+              to="/auth"
+              className="label-xs flex items-center gap-2 border border-slate-900 bg-slate-900 px-4 py-2.5 text-white transition-colors hover:border-indigo-600 hover:bg-indigo-600"
+            >
+              Access Terminal
+              <ArrowRight className="h-3 w-3" strokeWidth={2.5} />
+            </Link>
+          </nav>
+        </div>
+      </header>
+
+      {/* HERO */}
+      <section className="relative border-b border-slate-200">
+        <div className="absolute inset-0 grid-bg pointer-events-none" />
+        <div className="relative mx-auto max-w-7xl px-6 py-24 md:py-32">
+          <div className="mb-10 flex items-center gap-3">
+            <span className="inline-block h-1.5 w-1.5 bg-indigo-600" />
+            <Label>System Online — Index v1.0.4</Label>
+          </div>
+
+          <h1 className="max-w-5xl text-5xl font-black uppercase tracking-tighter leading-[0.95] text-slate-900 md:text-7xl lg:text-[88px]">
+            Quantifying<br />Construction<br />
+            <span className="text-slate-400">Bid Risk.</span>
+          </h1>
+
+          <p className="mt-10 max-w-xl text-base leading-relaxed text-slate-600 md:text-lg">
+            The industrial standard for neural BoQ analysis and infrastructure
+            tender evaluation. Built for operators of national-scale
+            procurement programs.
+          </p>
+
+          <div className="mt-12 flex flex-wrap items-center gap-3">
+            <Link
+              to="/auth"
+              className="label-xs flex items-center gap-3 border border-slate-900 bg-slate-900 px-6 py-4 text-white transition-colors hover:border-indigo-600 hover:bg-indigo-600"
+            >
+              Initiate System Audit
+              <ArrowRight className="h-3.5 w-3.5" strokeWidth={2.5} />
+            </Link>
+            <button className="label-xs border border-slate-200 bg-white px-6 py-4 text-slate-900 transition-colors hover:border-slate-900">
+              View Technical Brief
+            </button>
+          </div>
+
+          {/* spec strip */}
+          <div className="mt-20 grid grid-cols-2 gap-px border border-slate-200 bg-slate-200 md:grid-cols-4">
+            {[
+              ["Tender Volume", "$12.4B"],
+              ["Active Pipelines", "184"],
+              ["Risk Models", "27"],
+              ["Latency", "1.2s"],
+            ].map(([k, v]) => (
+              <div key={k} className="bg-white px-5 py-5">
+                <Label>{k}</Label>
+                <div className="mt-2 font-mono text-2xl font-bold tracking-tight text-slate-900">
+                  {v}
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      </section>
+
+      {/* NEURAL ENGINE */}
+      <section className="border-b border-slate-200">
+        <div className="mx-auto max-w-7xl px-6 py-24">
+          <div className="mb-16 flex flex-col gap-4 md:flex-row md:items-end md:justify-between">
+            <div>
+              <div className="mb-4 flex items-center gap-2">
+                <span className="inline-block h-1.5 w-1.5 bg-indigo-600" />
+                <Label>Module 02 / Neural Engine</Label>
+              </div>
+              <h2 className="max-w-2xl text-3xl font-black uppercase tracking-tighter text-slate-900 md:text-5xl">
+                The computational layer beneath every decision.
+              </h2>
+            </div>
+            <div className="font-mono text-xs text-slate-400">
+              REV. 2026.06 / CORE
+            </div>
+          </div>
+
+          <div className="grid grid-cols-1 gap-px border border-slate-200 bg-slate-200 md:grid-cols-3">
+            {[
+              {
+                icon: <Cpu className="h-4 w-4" strokeWidth={2} />,
+                label: "01 / BoQ Calibration",
+                title: "Bill-of-Quantities Calibration",
+                body: "Cross-referencing line items against regional market indices, supplier benchmarks, and historical cost performance.",
+              },
+              {
+                icon: <ShieldCheck className="h-4 w-4" strokeWidth={2} />,
+                label: "02 / Risk Indexing",
+                title: "Contractual Risk Indexing",
+                body: "Quantifying contractual and logistical slippage probability across the project lifecycle with deterministic models.",
+              },
+              {
+                icon: <Globe className="h-4 w-4" strokeWidth={2} />,
+                label: "03 / Terminal Pipeline",
+                title: "Procurement Pipeline",
+                body: "Integrated procurement feeds from ERA, PPSA, and ECAA, normalised into a single tender intelligence stream.",
+              },
+            ].map((c) => (
+              <div key={c.label} className="group bg-white p-8 transition-colors hover:bg-zinc-50">
+                <div className="flex items-center justify-between">
+                  <IconBox>{c.icon}</IconBox>
+                  <Label>{c.label}</Label>
+                </div>
+                <h3 className="mt-10 text-xl font-bold uppercase tracking-tight text-slate-900">
+                  {c.title}
+                </h3>
+                <p className="mt-3 text-sm leading-relaxed text-slate-600">
+                  {c.body}
+                </p>
+                <div className="mt-10 flex items-center gap-2 border-t border-slate-200 pt-4 label-xs text-slate-400 group-hover:text-indigo-600">
+                  Read Specification
+                  <ArrowRight className="h-3 w-3" strokeWidth={2.5} />
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      </section>
+
+      {/* ENGINEERING READOUT */}
+      <section className="border-b border-slate-200 bg-zinc-50">
+        <div className="mx-auto max-w-7xl px-6 py-24">
+          <div className="mb-12 flex items-center gap-2">
+            <span className="inline-block h-1.5 w-1.5 bg-indigo-600" />
+            <Label>Module 03 / Engineering Readout</Label>
+          </div>
+
+          <div className="grid grid-cols-1 gap-12 lg:grid-cols-[1fr_1.4fr]">
+            <div>
+              <h2 className="text-3xl font-black uppercase tracking-tighter text-slate-900 md:text-5xl">
+                Read a tender like a spec sheet.
+              </h2>
+              <p className="mt-6 max-w-md text-sm leading-relaxed text-slate-600">
+                Every bid is decomposed into deterministic variables. The
+                Engineering Readout surfaces variance, slippage exposure, and
+                margin integrity in a single, audit-ready frame.
+              </p>
+              <div className="mt-10 space-y-3 border-t border-slate-200 pt-6">
+                {[
+                  ["Source", "PPSA-EX-2418"],
+                  ["Issued", "2026.06.14 / 09:42Z"],
+                  ["Analyst", "OP-2207"],
+                  ["Compliance", "ISO 19650 / Tier 1"],
+                ].map(([k, v]) => (
+                  <div key={k} className="flex items-center justify-between font-mono text-xs">
+                    <span className="label-xs text-slate-400">{k}</span>
+                    <span className="text-slate-900">{v}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            {/* Readout panel */}
+            <div className="border border-slate-300 bg-white">
+              {/* terminal header */}
+              <div className="flex items-center justify-between border-b border-slate-300 bg-slate-900 px-5 py-3">
+                <div className="flex items-center gap-3">
+                  <Activity className="h-3.5 w-3.5 text-indigo-400" strokeWidth={2.5} />
+                  <span className="label-xs text-white">Engineering Readout · LIVE</span>
+                </div>
+                <span className="font-mono text-[10px] text-slate-400">VLT://stream/0x4F2A</span>
+              </div>
+
+              <div className="grid grid-cols-2 gap-px border-b border-slate-300 bg-slate-200">
+                <div className="bg-white px-5 py-4">
+                  <Label>Project ID</Label>
+                  <div className="mt-1 font-mono text-sm font-bold text-slate-900">
+                    AAU-MTR-PH3-204
+                  </div>
+                </div>
+                <div className="bg-white px-5 py-4">
+                  <Label>Contract Value</Label>
+                  <div className="mt-1 font-mono text-sm font-bold text-slate-900">
+                    USD 482,140,000
+                  </div>
+                </div>
+              </div>
+
+              <div className="border-b border-slate-300 p-6">
+                <div className="flex items-end justify-between">
+                  <div>
+                    <Label>Composite Risk Index</Label>
+                    <div className="mt-2 font-black tracking-tighter text-slate-900 text-6xl">
+                      67.4<span className="text-2xl text-slate-400">%</span>
+                    </div>
+                  </div>
+                  <div className="text-right">
+                    <Label>Status</Label>
+                    <div className="mt-2 inline-flex items-center gap-2 border border-slate-900 bg-slate-900 px-3 py-1.5 text-white">
+                      <AlertTriangle className="h-3 w-3" strokeWidth={2.5} />
+                      <span className="label-xs">Variance Detected</span>
+                    </div>
+                  </div>
+                </div>
+
+                {/* bar */}
+                <div className="mt-6 h-1.5 w-full bg-slate-100">
+                  <div className="h-full bg-indigo-600" style={{ width: "67.4%" }} />
+                </div>
+                <div className="mt-2 flex justify-between font-mono text-[10px] text-slate-400">
+                  <span>0.0</span>
+                  <span>THRESHOLD 55.0</span>
+                  <span>100.0</span>
+                </div>
+              </div>
+
+              {/* line items */}
+              <div className="divide-y divide-slate-200">
+                {[
+                  ["Earthworks / Excavation", "+4.20%", "NOMINAL"],
+                  ["Reinforced Concrete C40", "+11.80%", "FLAGGED"],
+                  ["Steel Reinforcement Bar", "+18.05%", "FLAGGED"],
+                  ["MEP Subcontract Package", "+2.10%", "NOMINAL"],
+                  ["Logistics & Mobilisation", "+7.60%", "WATCH"],
+                ].map(([item, val, status]) => (
+                  <div key={item} className="grid grid-cols-[1fr_auto_auto] items-center gap-6 px-5 py-3 font-mono text-xs">
+                    <span className="text-slate-700">{item}</span>
+                    <span className="text-slate-900">{val}</span>
+                    <span
+                      className={
+                        "label-xs " +
+                        (status === "FLAGGED"
+                          ? "text-indigo-600"
+                          : status === "WATCH"
+                            ? "text-slate-900"
+                            : "text-slate-400")
+                      }
+                    >
+                      {status}
+                    </span>
+                  </div>
+                ))}
+              </div>
+
+              <div className="flex items-center justify-between border-t border-slate-300 bg-zinc-50 px-5 py-3">
+                <div className="flex items-center gap-2">
+                  <BarChart3 className="h-3.5 w-3.5 text-slate-500" strokeWidth={2} />
+                  <span className="label-xs text-slate-500">Model VLT-Core 4.2</span>
+                </div>
+                <span className="font-mono text-[10px] text-slate-400">
+                  T+0.84s / 2,418 variables
+                </span>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      {/* CTA */}
+      <section className="border-b border-slate-200">
+        <div className="mx-auto flex max-w-7xl flex-col items-start justify-between gap-8 px-6 py-20 md:flex-row md:items-center">
+          <div>
+            <Label>Restricted Access</Label>
+            <h3 className="mt-4 max-w-2xl text-3xl font-black uppercase tracking-tighter text-slate-900 md:text-4xl">
+              Deploy Valtor against your active tender book.
+            </h3>
+          </div>
+          <Link
+            to="/auth"
+            className="label-xs flex items-center gap-3 border border-slate-900 bg-slate-900 px-6 py-4 text-white transition-colors hover:border-indigo-600 hover:bg-indigo-600"
+          >
+            Initiate System Audit
+            <ArrowRight className="h-3.5 w-3.5" strokeWidth={2.5} />
+          </Link>
+        </div>
+      </section>
+
+      {/* FOOTER */}
+      <footer className="bg-white">
+        <div className="mx-auto grid max-w-7xl grid-cols-1 gap-6 px-6 py-10 md:grid-cols-3">
+          <div className="flex items-center gap-3">
+            <div className="flex h-6 w-6 items-center justify-center bg-slate-900">
+              <div className="h-1.5 w-1.5 bg-white" />
+            </div>
+            <span className="label-xs text-slate-900">Valtor Systems</span>
+          </div>
+          <div className="font-mono text-[11px] text-slate-500 md:text-center">
+            Restricted Proprietary System — Unauthorized access prohibited.
+          </div>
+          <div className="font-mono text-[11px] text-slate-400 md:text-right">
+            BUILD v1.0.4 · SHA 0x4F2A · © 2026
+          </div>
+        </div>
+      </footer>
+    </div>
+  );
+}
 </file>
 
 <file path="src/styles.css">
@@ -2132,6 +1635,21 @@ export const Route = createFileRoute("/")({
     color: #9CA3AF;
   }
   .empty-state p { font-size: 0.875rem; margin-top: 0.5rem; }
+}
+
+/* ── Landing page utilities (merged from marketing site) ────────────────── */
+@utility grid-bg {
+  background-image:
+    linear-gradient(to right, rgba(228, 231, 236, 0.6) 1px, transparent 1px),
+    linear-gradient(to bottom, rgba(228, 231, 236, 0.6) 1px, transparent 1px);
+  background-size: 40px 40px;
+}
+
+@utility label-xs {
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.2em;
 }
 </file>
 
@@ -2690,6 +2208,382 @@ export function useAudits() {
 
 export function dispatchAuditsUpdated() {
   window.dispatchEvent(new Event("valtor:audits-updated"));
+}
+</file>
+
+<file path="src/routes/_authenticated/dashboard.tsx">
+import { createFileRoute, Link } from "@tanstack/react-router";
+import { useAudits } from "@/integrations/supabase/audits";
+import { useState } from "react";
+import {
+  ScatterChart, Scatter, XAxis, YAxis, CartesianGrid, Tooltip,
+  Cell, ResponsiveContainer, ReferenceLine,
+} from "recharts";
+import {
+  AlertTriangle, FileSearch, CheckCircle2,
+  Shield, AlertOctagon, TrendingUp, ChevronRight, FileText,
+} from "lucide-react";
+
+export const Route = createFileRoute("/_authenticated/dashboard")({
+  head: () => ({ meta: [{ title: "Dashboard — Valtor" }] }),
+  component: Dashboard,
+});
+
+// ─── Helpers ─────────────────────────────────────────────────────────────────
+
+function fmtEtb(n: number) {
+  if (n >= 1_000_000_000) return `${(n / 1_000_000_000).toFixed(2)}B`;
+  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
+  return Math.round(n).toLocaleString();
+}
+
+function riskColor(score: number | null) {
+  if (score === null) return "#94A3B8";
+  if (score < 40) return "#16A34A";
+  if (score < 65) return "#D97706";
+  return "#DC2626";
+}
+
+function riskLabel(score: number | null) {
+  if (score === null) return "—";
+  if (score < 40) return "LOW";
+  if (score < 65) return "MEDIUM";
+  return "HIGH";
+}
+
+// ─── Contract Flags ───────────────────────────────────────────────────────────
+
+function ContractFlags({ analysis }: { analysis: any }) {
+  const traps = analysis?.contractual_traps ?? [];
+
+  const hasLD = traps.some((t: any) =>
+    String(t.type || t).toLowerCase().includes("ld") ||
+    String(t.clause || t).toLowerCase().includes("liquidat")
+  );
+  const hasRetention = traps.some((t: any) =>
+    String(t.type || t).toLowerCase().includes("retain")
+  );
+  const hasEscalation = traps.some((t: any) =>
+    String(t.type || t).toLowerCase().includes("escal")
+  );
+
+  const badges: { icon: React.ReactNode; label: string; color: string; bg: string; border: string }[] = [];
+  if (hasLD || traps.length > 0)
+    badges.push({ icon: <AlertOctagon size={11} />, label: "LD Exposure", color: "#DC2626", bg: "#FEF2F2", border: "#FECACA" });
+  if (hasRetention)
+    badges.push({ icon: <Shield size={11} />, label: "Retention Gap", color: "#D97706", bg: "#FFFBEB", border: "#FDE68A" });
+  if (hasEscalation)
+    badges.push({ icon: <TrendingUp size={11} />, label: "No Escalation", color: "#0369A1", bg: "#EFF6FF", border: "#BFDBFE" });
+  if (!badges.length && traps.length > 0)
+    traps.slice(0, 3).forEach((t: any) =>
+      badges.push({ icon: <AlertTriangle size={11} />, label: String(t.clause || t.description || t).slice(0, 24), color: "#D97706", bg: "#FFFBEB", border: "#FDE68A" })
+    );
+
+  if (!badges.length)
+    return (
+      <div style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12, color: "#16A34A" }}>
+        <CheckCircle2 size={14} /> No contractual traps detected
+      </div>
+    );
+
+  return (
+    <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+      {badges.map(b => (
+        <div key={b.label} style={{
+          display: "flex", alignItems: "center", gap: 5,
+          background: b.bg, border: `1px solid ${b.border}`,
+          color: b.color, fontSize: 11, padding: "4px 10px", borderRadius: 20, fontWeight: 600,
+        }}>
+          {b.icon} {b.label}
+        </div>
+      ))}
+    </div>
+  );
+}
+
+// ─── BoQ Variance (real data only) ───────────────────────────────────────────
+
+function BoqVarianceBars({ analysis }: { analysis: any }) {
+  const variance = analysis?.market_variance ?? [];
+  if (!variance.length)
+    return <div style={{ fontSize: 12, color: "#94A3B8" }}>No variance data extracted for this project.</div>;
+
+  const data = variance.slice(0, 6).map((v: any) => ({
+    item: String(v.item || v.description || "Bill").slice(0, 14),
+    variance: Number(v.variance_percent ?? v.percentage ?? 0),
+  }));
+
+  return (
+    <div>
+      <div style={{ fontSize: 11, color: "#94A3B8", marginBottom: 10 }}>
+        Your rates vs market avg. <span style={{ color: "#DC2626" }}>Red = &gt;15% above market</span>
+      </div>
+      {data.map(d => {
+        const pct = Math.round(d.variance);
+        const isWarn = Math.abs(pct) > 15;
+        const color = pct > 15 ? "#DC2626" : pct > 0 ? "#D97706" : "#16A34A";
+        const w = Math.min(Math.abs(pct) * 2.5, 100);
+        return (
+          <div key={d.item} style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 6 }}>
+            <div style={{ fontSize: 11, color: "#64748B", width: 90, flexShrink: 0 }}>{d.item}</div>
+            <div style={{ flex: 1, height: 10, background: "#F1F5F9", borderRadius: 2, position: "relative", overflow: "hidden" }}>
+              <div style={{ position: "absolute", left: pct < 0 ? `${50 - w / 2}%` : "50%", width: `${w / 2}%`, height: "100%", background: color, borderRadius: 2 }} />
+              <div style={{ position: "absolute", left: "50%", width: 1, height: "100%", background: "#CBD5E1" }} />
+            </div>
+            <div style={{ fontFamily: "monospace", fontSize: 11, color: isWarn ? color : "#64748B", fontWeight: isWarn ? 700 : 400, width: 40, textAlign: "right" }}>
+              {pct > 0 ? "+" : ""}{pct}%
+            </div>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+// ─── Risk Scatter ─────────────────────────────────────────────────────────────
+
+function RiskScatter({ audits }: { audits: any[] }) {
+  const data = audits.map(a => ({
+    name: a.project_name,
+    risk: Number(a.risk_score ?? 50),
+    value: Number(a.contract_value ?? 0) / 1_000_000,
+    fill: riskColor(Number(a.risk_score ?? 50)),
+  }));
+
+  return (
+    <ResponsiveContainer width="100%" height={180}>
+      <ScatterChart margin={{ top: 10, right: 12, bottom: 20, left: 8 }}>
+        <CartesianGrid stroke="#F1F5F9" />
+        <XAxis dataKey="risk" type="number" domain={[0, 100]} name="Risk"
+          tick={{ fontSize: 10, fill: "#94A3B8" }}
+          label={{ value: "Risk Score →", position: "insideBottom", offset: -10, fontSize: 10, fill: "#94A3B8" }} />
+        <YAxis dataKey="value" name="Value (M ETB)"
+          tick={{ fontSize: 10, fill: "#94A3B8" }}
+          label={{ value: "M ETB", angle: -90, position: "insideLeft", offset: 12, fontSize: 10, fill: "#94A3B8" }} />
+        <Tooltip
+          contentStyle={{ background: "#fff", border: "1px solid #E2E8F0", fontSize: 11, borderRadius: 6, boxShadow: "0 2px 8px rgba(0,0,0,0.08)" }}
+          formatter={(value: number, name: string) => [name === "value" ? `${Math.round(value)}M ETB` : Math.round(value), name === "value" ? "Contract Value" : "Risk Score"]}
+          labelFormatter={() => ""}
+        />
+        <ReferenceLine x={65} stroke="#FECACA" strokeDasharray="4 2" />
+        <Scatter data={data} fill="#3B82F6">
+          {data.map((d, i) => <Cell key={i} fill={d.fill} />)}
+        </Scatter>
+      </ScatterChart>
+    </ResponsiveContainer>
+  );
+}
+
+// ─── Dashboard ────────────────────────────────────────────────────────────────
+
+function Dashboard() {
+  const { audits, loading } = useAudits();
+  const [selectedAudit, setSelectedAudit] = useState<any | null>(null);
+
+  const total = audits.length;
+  const totalValue = audits.reduce((s, a) => s + Number(a.contract_value || 0), 0);
+  const scored = audits.filter(a => a.risk_score != null);
+  const avgRisk = scored.length ? Math.round(scored.reduce((s, a) => s + Number(a.risk_score!), 0) / scored.length) : null;
+  const highRisk = audits.filter(a => Number(a.risk_score ?? 0) > 65).length;
+  const proceed = audits.filter(a => a.analysis?.recommendation === "PROCEED").length;
+
+  const card = { background: "#fff", border: "1px solid #E2E8F0", borderRadius: 10, overflow: "hidden" as const, boxShadow: "0 1px 3px rgba(0,0,0,0.04)" };
+  const cardHdr = { display: "flex" as const, alignItems: "center" as const, justifyContent: "space-between" as const, padding: "12px 18px", borderBottom: "1px solid #F1F5F9" };
+  const lbl = { fontSize: 10, fontWeight: 700, textTransform: "uppercase" as const, letterSpacing: "1px", color: "#94A3B8" };
+  const mono = { fontFamily: "'JetBrains Mono','Fira Code',monospace" };
+
+  return (
+    <div style={{ background: "#F8FAFC", minHeight: "100vh", color: "#0F172A", fontFamily: "Inter,system-ui,sans-serif", fontSize: 13 }}>
+
+      {/* Top bar */}
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "0 24px", height: 52, background: "#fff", borderBottom: "1px solid #E2E8F0" }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 20 }}>
+          <div style={{ ...mono, fontSize: 15, fontWeight: 800, letterSpacing: 2 }}>VALTOR</div>
+          <div style={{ width: 1, height: 20, background: "#E2E8F0" }} />
+          <div style={{ fontSize: 12, color: "#64748B" }}>{total} {total === 1 ? "project" : "projects"} audited</div>
+          {totalValue > 0 && (
+            <>
+              <div style={{ width: 1, height: 20, background: "#E2E8F0" }} />
+              <div style={{ fontSize: 12, color: "#64748B" }}>
+                Total exposure: <span style={{ ...mono, color: "#0F172A", fontWeight: 600 }}>{fmtEtb(totalValue)} ETB</span>
+              </div>
+            </>
+          )}
+        </div>
+        <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+          {highRisk > 0 && (
+            <div style={{ display: "flex", alignItems: "center", gap: 5, background: "#FEF2F2", border: "1px solid #FECACA", color: "#DC2626", fontSize: 11, padding: "4px 12px", borderRadius: 20, fontWeight: 600 }}>
+              <AlertTriangle size={12} /> {highRisk} high-risk
+            </div>
+          )}
+          <Link to="/audit" style={{ background: "#0F172A", color: "#fff", padding: "8px 16px", fontSize: 12, fontWeight: 600, borderRadius: 8, display: "flex", alignItems: "center", gap: 6, textDecoration: "none" }}>
+            <FileSearch size={13} /> New Audit
+          </Link>
+        </div>
+      </div>
+
+      {/* Grid */}
+      <div style={{ padding: "20px 24px", display: "grid", gridTemplateColumns: "280px 1fr", gap: 16 }}>
+
+        {/* ── Left ── */}
+        <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+
+          {/* KPIs */}
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+            {[
+              { label: "Portfolio Value", value: totalValue > 0 ? `${fmtEtb(totalValue)} ETB` : "—", sub: "across all audits", accent: undefined as string | undefined },
+              { label: "Projects", value: String(total || "—"), sub: "in workspace", accent: undefined as string | undefined },
+              { label: "Avg Risk Score", value: avgRisk !== null ? String(avgRisk) : "—", sub: avgRisk !== null ? riskLabel(avgRisk) : "no scored projects", accent: avgRisk !== null ? riskColor(avgRisk) : undefined },
+              { label: "AI: Proceed", value: String(proceed || "—"), sub: "recommended bids", accent: proceed > 0 ? "#16A34A" : undefined as string | undefined },
+            ].map(k => (
+              <div key={k.label} style={{ ...card, padding: "14px 16px" }}>
+                <div style={{ fontSize: 10, textTransform: "uppercase" as const, letterSpacing: "0.8px", color: "#94A3B8", marginBottom: 6 }}>{k.label}</div>
+                <div style={{ ...mono, fontSize: 22, fontWeight: 700, color: k.accent ?? "#0F172A", lineHeight: 1 }}>{k.value}</div>
+                <div style={{ fontSize: 10, color: "#94A3B8", marginTop: 4 }}>{k.sub}</div>
+              </div>
+            ))}
+          </div>
+
+          {/* Scatter */}
+          <div style={card}>
+            <div style={cardHdr}>
+              <div style={lbl}>Risk vs Value</div>
+              {highRisk > 0 && <div style={{ fontSize: 10, color: "#DC2626", fontWeight: 600 }}>⚠ {highRisk} above threshold</div>}
+            </div>
+            <div style={{ padding: "8px 12px 12px" }}>
+              {loading ? (
+                <div style={{ height: 180, display: "flex", alignItems: "center", justifyContent: "center", color: "#94A3B8", fontSize: 12 }}>Loading…</div>
+              ) : audits.length === 0 ? (
+                <div style={{ height: 180, display: "flex", alignItems: "center", justifyContent: "center", color: "#94A3B8", fontSize: 12, textAlign: "center" }}>No audits yet.<br />Run your first bid audit to populate this chart.</div>
+              ) : <RiskScatter audits={audits} />}
+            </div>
+          </div>
+
+          {/* Reports */}
+          <div style={card}>
+            <div style={cardHdr}><div style={lbl}>Reports</div></div>
+            <div style={{ padding: "12px 14px", display: "flex", flexDirection: "column", gap: 8 }}>
+              {["Board-Ready PDF Report", "Excel Export"].map(name => (
+                <Link key={name} to="/history" style={{ display: "flex", alignItems: "center", gap: 8, background: "#F8FAFC", border: "1px solid #E2E8F0", color: "#0F172A", fontSize: 12, fontWeight: 500, padding: "10px 14px", borderRadius: 8, textDecoration: "none" }}>
+                  <FileText size={14} color="#64748B" /> {name}
+                </Link>
+              ))}
+            </div>
+          </div>
+
+        </div>
+
+        {/* ── Right ── */}
+        <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+
+          {/* Pipeline table */}
+          <div style={card}>
+            <div style={cardHdr}>
+              <div style={lbl}>Active Pipeline</div>
+              <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
+                <div style={{ fontSize: 11, color: "#94A3B8" }}>{total} projects</div>
+                <Link to="/history" style={{ fontSize: 11, color: "#3B82F6", display: "flex", alignItems: "center", gap: 2, textDecoration: "none" }}>View all <ChevronRight size={11} /></Link>
+              </div>
+            </div>
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 130px 80px 90px", padding: "8px 18px", borderBottom: "1px solid #F1F5F9", fontSize: 10, fontWeight: 700, textTransform: "uppercase" as const, letterSpacing: "0.8px", color: "#94A3B8" }}>
+              <div>Project</div>
+              <div style={{ textAlign: "right" }}>Value (ETB)</div>
+              <div style={{ textAlign: "center" }}>Risk</div>
+              <div style={{ textAlign: "center" }}>Decision</div>
+            </div>
+            <div style={{ maxHeight: 280, overflowY: "auto" }}>
+              {loading ? (
+                <div style={{ padding: "28px", textAlign: "center", color: "#94A3B8", fontSize: 12 }}>Loading pipeline…</div>
+              ) : audits.length === 0 ? (
+                <div style={{ padding: "40px 24px", textAlign: "center", color: "#94A3B8", fontSize: 12 }}>
+                  No audits yet. <Link to="/audit" style={{ color: "#3B82F6", textDecoration: "none", fontWeight: 600 }}>Run your first bid audit →</Link>
+                </div>
+              ) : audits.map(a => {
+                const isSelected = selectedAudit?.id === a.id;
+                const rec = a.analysis?.recommendation;
+                const recColor = rec === "PROCEED" ? "#16A34A" : rec === "DECLINE" ? "#DC2626" : "#D97706";
+                const recBg = rec === "PROCEED" ? "#F0FDF4" : rec === "DECLINE" ? "#FEF2F2" : "#FFFBEB";
+                const score = a.risk_score != null ? Math.round(Number(a.risk_score)) : null;
+                return (
+                  <div key={a.id}
+                    onClick={() => setSelectedAudit(isSelected ? null : a)}
+                    style={{ display: "grid", gridTemplateColumns: "1fr 130px 80px 90px", alignItems: "center", padding: "11px 18px", borderBottom: "1px solid #F8FAFC", cursor: "pointer", background: isSelected ? "#EFF6FF" : "transparent", transition: "background 0.1s" }}
+                    onMouseEnter={e => { if (!isSelected) (e.currentTarget as HTMLElement).style.background = "#F8FAFC"; }}
+                    onMouseLeave={e => { if (!isSelected) (e.currentTarget as HTMLElement).style.background = "transparent"; }}
+                  >
+                    <div style={{ fontSize: 13, fontWeight: 500 }}>{a.project_name}</div>
+                    <div style={{ ...mono, fontSize: 12, color: "#64748B", textAlign: "right" }}>{fmtEtb(Number(a.contract_value ?? 0))}</div>
+                    <div style={{ display: "flex", justifyContent: "center" }}>
+                      {score !== null ? (
+                        <div style={{ ...mono, fontSize: 12, fontWeight: 700, padding: "2px 10px", borderRadius: 20, background: `${riskColor(score)}15`, color: riskColor(score), border: `1px solid ${riskColor(score)}30` }}>
+                          {score}
+                        </div>
+                      ) : <span style={{ color: "#94A3B8" }}>—</span>}
+                    </div>
+                    <div style={{ display: "flex", justifyContent: "center" }}>
+                      {rec ? (
+                        <div style={{ fontSize: 10, fontWeight: 700, padding: "2px 10px", borderRadius: 20, background: recBg, color: recColor, border: `1px solid ${recColor}30` }}>
+                          {rec}
+                        </div>
+                      ) : <span style={{ color: "#94A3B8" }}>—</span>}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+
+          {/* Analysis panel */}
+          <div style={card}>
+            <div style={cardHdr}>
+              <div style={lbl}>{selectedAudit ? `Analysis — ${selectedAudit.project_name}` : "Project Analysis"}</div>
+              {selectedAudit && selectedAudit.risk_score != null && (
+                <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                  <div style={{ ...mono, fontSize: 14, fontWeight: 700, color: riskColor(Number(selectedAudit.risk_score)) }}>
+                    {Math.round(Number(selectedAudit.risk_score))}/100
+                  </div>
+                  <div style={{ fontSize: 10, fontWeight: 700, padding: "2px 10px", borderRadius: 20, background: `${riskColor(Number(selectedAudit.risk_score))}12`, color: riskColor(Number(selectedAudit.risk_score)), border: `1px solid ${riskColor(Number(selectedAudit.risk_score))}30` }}>
+                    {riskLabel(Number(selectedAudit.risk_score))} RISK
+                  </div>
+                </div>
+              )}
+            </div>
+
+            {!selectedAudit ? (
+              <div style={{ padding: "48px 24px", textAlign: "center", color: "#94A3B8", fontSize: 12, lineHeight: 1.7 }}>
+                Click any project above to see its BoQ variance analysis,<br />contract flags, and AI findings.
+              </div>
+            ) : (
+              <div style={{ padding: "18px 20px", display: "grid", gridTemplateColumns: "1fr 1fr", gap: 28 }}>
+                <div>
+                  <div style={{ ...lbl, marginBottom: 14 }}>BoQ Variance vs Market</div>
+                  <BoqVarianceBars analysis={selectedAudit.analysis} />
+                </div>
+                <div>
+                  <div style={{ ...lbl, marginBottom: 14 }}>Contract Flags</div>
+                  <ContractFlags analysis={selectedAudit.analysis} />
+                  {selectedAudit.analysis?.key_findings?.length > 0 && (
+                    <div style={{ marginTop: 22 }}>
+                      <div style={{ ...lbl, marginBottom: 12 }}>Key Findings</div>
+                      <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                        {selectedAudit.analysis.key_findings.slice(0, 4).map((f: string, i: number) => (
+                          <div key={i} style={{ display: "flex", gap: 8, fontSize: 12, color: "#334155", lineHeight: 1.6 }}>
+                            <div style={{ color: "#CBD5E1", flexShrink: 0, marginTop: 2 }}>›</div>
+                            <div>{f}</div>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                </div>
+              </div>
+            )}
+          </div>
+
+        </div>
+      </div>
+    </div>
+  );
 }
 </file>
 
