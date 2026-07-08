@@ -42,6 +42,7 @@ The content is organized as follows:
 <directory_structure>
 .env.example
 .gitignore
+api/check-analysis.js
 index.html
 package.json
 src/assets/logo.png
@@ -49,6 +50,8 @@ src/components/AppShell.tsx
 src/components/HeroBuildingScene_R3F.tsx
 src/components/HeroBuildingScene.tsx
 src/components/HeroConstruction.tsx
+src/components/RiskUtils.tsx
+src/components/Section.tsx
 src/integrations/supabase/audits.ts
 src/integrations/supabase/client.ts
 src/integrations/supabase/config.ts
@@ -63,18 +66,143 @@ src/routes/auth.tsx
 src/routes/index.tsx
 src/routeTree.gen.ts
 src/styles.css
+src/types/audit.ts
 src/utils/analytics-logic.ts
 src/utils/download.ts
 src/vite-env.d.ts
 SUPABASE_SETUP.md
 supabase/migrations/001_initial_security.sql
 tsconfig.json
+valtor-fixes.patch
 vercel.json
 vite.config.ts
 </directory_structure>
 
 <files>
 This section contains the contents of the repository's files.
+
+<file path=".env.example">
+VITE_SUPABASE_URL=https://your-project-ref.supabase.co
+VITE_SUPABASE_ANON_KEY=your-supabase-anon-or-publishable-key
+
+# Used by the audit page when calling Gemini.
+VITE_GEMINI_API_KEY=your-gemini-api-key
+</file>
+
+<file path=".gitignore">
+node_modules/
+dist/
+.tanstack/tmp/
+
+.env
+.env.*
+!.env.example
+
+*.log
+vite.config.timestamp_*.js
+
+.vercel
+</file>
+
+<file path="api/check-analysis.js">
+// api/check-analysis.js
+import Groq from "groq-sdk";
+import { createClient } from "@supabase/supabase-js";
+
+const groq = new Groq({ apiKey: process.env.GROQ_API_KEY });
+
+const supabaseAdmin = createClient(
+  process.env.VITE_SUPABASE_URL,
+  process.env.SUPABASE_SERVICE_ROLE_KEY
+);
+
+export default async function handler(req, res) {
+  if (req.method !== "POST") {
+    return res.status(405).json({ error: "Method not allowed. Use POST." });
+  }
+
+  const authHeader = req.headers["authorization"] || "";
+  if (!authHeader.startsWith("Bearer ")) {
+    return res.status(401).json({ error: "Missing authorization token." });
+  }
+  const token = authHeader.slice("Bearer ".length).trim();
+  if (!token) {
+    return res.status(401).json({ error: "Missing authorization token." });
+  }
+
+  const { data: userData, error: userError } = await supabaseAdmin.auth.getUser(token);
+  if (userError || !userData?.user) {
+    return res.status(401).json({ error: "Invalid or expired session. Please sign in again." });
+  }
+
+  try {
+    const { systemPrompt, userPrompt } = req.body;
+
+    if (!systemPrompt || !userPrompt) {
+      return res.status(400).json({ error: "Missing systemPrompt or userPrompt." });
+    }
+
+    const chatCompletion = await groq.chat.completions.create({
+      model: "llama-3.3-70b-versatile",
+      temperature: 0.15,
+      max_tokens: 4000,
+      response_format: { type: "json_object" },
+      messages: [
+        { role: "system", content: systemPrompt },
+        { role: "user",   content: userPrompt   },
+      ],
+    });
+
+    let raw = chatCompletion.choices[0]?.message?.content || "{}";
+    
+    // FIX: Strip markdown formatting so JSON.parse doesn't crash
+    raw = raw.replace(/```json/g, "").replace(/```/g, "").trim();
+    
+    const analysis = JSON.parse(raw);
+    return res.status(200).json(analysis);
+
+  } catch (error) {
+    console.error("Groq API Failure:", error);
+    return res.status(500).json({ error: "Failed to process audit analysis.", detail: error.message });
+  }
+}
+</file>
+
+<file path="package.json">
+{
+  "name": "valtor",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "typecheck": "tsc --noEmit",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "@supabase/supabase-js": "^2.89.0",
+    "@tanstack/react-router": "^1.170.15",
+    "groq-sdk": "^1.3.0",
+    "lucide-react": "^0.556.0",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "recharts": "^2.12.7",
+    "tailwindcss": "^4.1.17",
+    "tw-animate-css": "^1.4.0",
+    "xlsx": "^0.18.5"
+  },
+  "devDependencies": {
+    "@tailwindcss/vite": "^4.1.17",
+    "@tanstack/router-plugin": "^1.168.18",
+    "@types/node": "^20.12.12",
+    "@types/react": "^18.3.3",
+    "@types/react-dom": "^18.3.0",
+    "@vitejs/plugin-react": "^4.3.0",
+    "typescript": "^5.4.5",
+    "vite": "^6.4.3"
+  }
+}
+</file>
 
 <file path="src/components/HeroBuildingScene_R3F.tsx">
 /**
@@ -1184,61 +1312,70 @@ export function HeroConstruction() {
 }
 </file>
 
-<file path=".env.example">
-VITE_SUPABASE_URL=https://your-project-ref.supabase.co
-VITE_SUPABASE_ANON_KEY=your-supabase-anon-or-publishable-key
+<file path="src/components/RiskUtils.tsx">
+// src/components/RiskUtils.tsx
+import { CheckCircle2, XCircle, AlertTriangle } from "lucide-react";
 
-# Used by the audit page when calling Gemini.
-VITE_GEMINI_API_KEY=your-gemini-api-key
+export function riskColor(score: number | null): string {
+  if (score === null) return "#94A3B8";
+  if (score < 40) return "#16A34A";
+  if (score < 65) return "#D97706";
+  return "#DC2626";
+}
+
+export function riskLabel(score: number | null): string {
+  if (score === null) return "—";
+  if (score < 40) return "LOW";
+  if (score < 65) return "MEDIUM";
+  return "HIGH";
+}
+
+export function riskClass(score: number | null): string {
+  if (score === null) return "";
+  if (score < 35) return "risk-low";
+  if (score < 65) return "risk-medium";
+  return "risk-high";
+}
+
+export function RecBadge({ rec }: { rec?: string }) {
+  const s = rec || "PROCEED_WITH_CAUTION";
+  const label = s.replace(/_/g, " ");
+  if (s === "PROCEED")
+    return <span className="badge badge-green flex items-center gap-1"><CheckCircle2 size={11} />{label}</span>;
+  if (s === "DECLINE")
+    return <span className="badge badge-red flex items-center gap-1"><XCircle size={11} />{label}</span>;
+  return <span className="badge badge-amber flex items-center gap-1"><AlertTriangle size={11} />{label}</span>;
+}
 </file>
 
-<file path=".gitignore">
-node_modules/
-dist/
-.tanstack/tmp/
+<file path="src/components/Section.tsx">
+// src/components/Section.tsx
+import { useState } from "react";
+import { ChevronDown, ChevronUp } from "lucide-react";
 
-.env
-.env.*
-!.env.example
+type Props = {
+  title: string;
+  icon: React.ReactNode;
+  accent: string;
+  defaultOpen?: boolean;
+  children: React.ReactNode;
+};
 
-*.log
-vite.config.timestamp_*.js
-
-.vercel
-</file>
-
-<file path="package.json">
-{
-  "name": "valtor",
-  "private": true,
-  "type": "module",
-  "scripts": {
-    "dev": "vite",
-    "build": "vite build",
-    "typecheck": "tsc --noEmit",
-    "preview": "vite preview"
-  },
-  "dependencies": {
-    "@supabase/supabase-js": "^2.89.0",
-    "@tanstack/react-router": "^1.170.15",
-    "lucide-react": "^0.556.0",
-    "react": "^18.3.1",
-    "react-dom": "^18.3.1",
-    "recharts": "^2.12.7",
-    "tailwindcss": "^4.1.17",
-    "tw-animate-css": "^1.4.0",
-    "xlsx": "^0.18.5"
-  },
-  "devDependencies": {
-    "@tailwindcss/vite": "^4.1.17",
-    "@tanstack/router-plugin": "^1.168.18",
-    "@types/node": "^20.12.12",
-    "@types/react": "^18.3.3",
-    "@types/react-dom": "^18.3.0",
-    "@vitejs/plugin-react": "^4.3.0",
-    "typescript": "^5.4.5",
-    "vite": "^6.4.3"
-  }
+export function Section({ title, icon, accent, defaultOpen = true, children }: Props) {
+  const [open, setOpen] = useState(defaultOpen);
+  return (
+    <div className={`panel shadow-sm border-l-4 ${accent}`}>
+      <button
+        onClick={() => setOpen(!open)}
+        className="w-full flex items-center justify-between bg-transparent border-none cursor-pointer text-left"
+        style={{ padding: "1.125rem 1.25rem" }}
+      >
+        <h4 className="section-label flex items-center gap-2 m-0">{icon} {title}</h4>
+        {open ? <ChevronUp size={14} className="text-slate-400" /> : <ChevronDown size={14} className="text-slate-400" />}
+      </button>
+      {open && <div style={{ padding: "0 1.25rem 1.25rem" }}>{children}</div>}
+    </div>
+  );
 }
 </file>
 
@@ -2020,6 +2157,91 @@ function TenderFeed() {
 }
 </file>
 
+<file path="src/types/audit.ts">
+// src/types/audit.ts
+//
+// Shared types for the shape of an audit's stored `analysis` JSON blob.
+// This mirrors the JSON structure the forensic-audit LLM prompt (see
+// src/routes/_authenticated/audit.tsx) is instructed to return, and that
+// gets persisted as-is into the `audits.analysis` jsonb column.
+
+export type Severity = "CRITICAL" | "HIGH" | "MEDIUM" | "LOW";
+
+export type ContractualTrap = {
+  clause_type: string;
+  fidic_ref: string;
+  severity: Severity;
+  description: string;
+  recommendation: string;
+};
+
+export type MarketVarianceItem = {
+  item: string;
+  category: string;
+  our_rate: number;
+  market_rate: number;
+  variance_pct: number;
+  unit: string;
+  note: string;
+};
+
+export type ArithmeticError = {
+  location: string;
+  description: string;
+  severity: Exclude<Severity, "CRITICAL">;
+  financial_impact: number;
+};
+
+export type ScopeGap = {
+  missing_element: string;
+  risk_impact: string;
+  estimated_cost_etb: number;
+};
+
+export type Recommendation = "PROCEED" | "PROCEED_WITH_CAUTION" | "DECLINE";
+
+// Financial Shield: reuses the Severity scale as its impact rating scale.
+export type ImpactLevel = Severity;
+
+export type FinancialShieldRisk = {
+  risk_type: string;
+  description: string;
+  cost_exposure: ImpactLevel;
+  schedule_impact: ImpactLevel;
+  cashflow_impact: ImpactLevel;
+  commercial_risk: ImpactLevel;
+  mitigation: string;
+};
+
+export type FinancialShield = {
+  overall_exposure: ImpactLevel;
+  shield_summary: string;
+  risks: FinancialShieldRisk[];
+  qualification_points: string[];
+};
+
+export type AuditAnalysis = {
+  risk_score: number;
+  recommendation: Recommendation;
+  executive_summary: string;
+  technical_critique: string;
+  methodology_strengths: string[];
+  methodology_weaknesses: string[];
+  arithmetic_errors: ArithmeticError[];
+  contractual_traps: ContractualTrap[];
+  market_variance: MarketVarianceItem[];
+  scope_gaps: ScopeGap[];
+  resource_gap_analysis: string;
+  plant_adequacy_assessment: string;
+  regulatory_compliance: string;
+  financial_risk_summary: string;
+  key_risks: string[];
+  financial_shield?: FinancialShield;
+};
+
+export type WorkflowStatus = "Draft" | "In Review" | "Approved" | "Rejected";
+</file>
+
 <file path="src/utils/analytics-logic.ts">
 import { AuditRow } from "@/integrations/supabase/audits";
 
@@ -2289,6 +2511,397 @@ create trigger on_auth_user_created
 }
 </file>
 
+<file path="valtor-fixes.patch">
+diff -ru original/.env.example repo/.env.example
+--- original/.env.example	2026-07-01 10:24:24.788683873 +0000
++++ repo/.env.example	2026-07-01 10:01:39.239497657 +0000
+@@ -1,5 +1,15 @@
+ VITE_SUPABASE_URL=https://your-project-ref.supabase.co
+ VITE_SUPABASE_ANON_KEY=your-supabase-anon-or-publishable-key
+ 
+-# Used by the audit page when calling Gemini.
+-VITE_GEMINI_API_KEY=your-gemini-api-key
+\ No newline at end of file
++# --- Server-side only (Vercel project env vars) ---
++# These are used by api/check-analysis.js and must NEVER be prefixed with
++# VITE_ — a VITE_ prefix causes Vite to inline the value into the client
++# bundle, which would expose it to every visitor.
++#
++# Groq API key, used server-side to run the forensic audit LLM call.
++GROQ_API_KEY=your-groq-api-key
++#
++# Supabase service role key, used server-side to verify a caller's session
++# token before running an audit. Find this in Supabase > Project Settings >
++# API > service_role key. Keep this secret — it bypasses RLS.
++SUPABASE_SERVICE_ROLE_KEY=your-supabase-service-role-key
+\ No newline at end of file
+diff -ru original/api/check-analysis.js repo/api/check-analysis.js
+--- original/api/check-analysis.js	2026-07-01 10:24:24.788481037 +0000
++++ repo/api/check-analysis.js	2026-07-01 10:00:50.876662884 +0000
+@@ -1,21 +1,38 @@
+ // api/check-analysis.js
+ import Groq from "groq-sdk";
++import { createClient } from "@supabase/supabase-js";
+ 
+ const groq = new Groq({ apiKey: process.env.GROQ_API_KEY });
+ 
++// Server-side Supabase client using the service role key. This never touches
++// the browser bundle — it only exists in this serverless function's env.
++const supabaseAdmin = createClient(
++  process.env.VITE_SUPABASE_URL,
++  process.env.SUPABASE_SERVICE_ROLE_KEY
++);
++
+ export default async function handler(req, res) {
+   // Only allow POST
+   if (req.method !== "POST") {
+     return res.status(405).json({ error: "Method not allowed. Use POST." });
+   }
+ 
+-  // Basic auth check — the caller must be a logged-in Supabase user.
+-  // We verify by checking the Authorization header contains a Bearer token.
+-  // (Full JWT verification via Supabase Admin SDK can be added later.)
++  // Require a Supabase-issued access token and verify it against Supabase Auth.
++  // This confirms the caller is an actual logged-in user, not just any string
++  // that happens to start with "Bearer ".
+   const authHeader = req.headers["authorization"] || "";
+   if (!authHeader.startsWith("Bearer ")) {
+     return res.status(401).json({ error: "Missing authorization token." });
+   }
++  const token = authHeader.slice("Bearer ".length).trim();
++  if (!token) {
++    return res.status(401).json({ error: "Missing authorization token." });
++  }
++
++  const { data: userData, error: userError } = await supabaseAdmin.auth.getUser(token);
++  if (userError || !userData?.user) {
++    return res.status(401).json({ error: "Invalid or expired session. Please sign in again." });
++  }
+ 
+   try {
+     const { systemPrompt, userPrompt } = req.body;
+@@ -43,4 +60,4 @@
+     console.error("Groq API Failure:", error);
+     return res.status(500).json({ error: "Failed to process audit analysis.", detail: error.message });
+   }
+-}
+\ No newline at end of file
++}
+diff -ru original/src/routes/_authenticated/audit.tsx repo/src/routes/_authenticated/audit.tsx
+--- original/src/routes/_authenticated/audit.tsx	2026-07-01 10:24:24.790027916 +0000
++++ repo/src/routes/_authenticated/audit.tsx	2026-07-01 10:22:45.005530008 +0000
+@@ -3,6 +3,7 @@
+ import { useState, useRef } from "react";
+ import { supabase } from "@/integrations/supabase/client";
+ import { insertAudit, dispatchAuditsUpdated } from "@/integrations/supabase/audits";
++import { RecBadge } from "@/components/RiskUtils";
+ import {
+   UploadCloud, Loader2, FileText, X, CheckCircle2,
+   XCircle, AlertTriangle, RotateCcw, ShieldAlert,
+@@ -85,14 +86,6 @@
+   return "bg-slate-100 text-slate-700 border-slate-200";
+ }
+ 
+-function RecBadge({ rec }: { rec?: string }) {
+-  const s = rec || "PROCEED_WITH_CAUTION";
+-  const label = s.replace(/_/g, " ");
+-  if (s === "PROCEED") return <span className="badge badge-green flex items-center gap-1"><CheckCircle2 size={11} /> {label}</span>;
+-  if (s === "DECLINE") return <span className="badge badge-red flex items-center gap-1"><XCircle size={11} /> {label}</span>;
+-  return <span className="badge badge-amber flex items-center gap-1"><AlertTriangle size={11} /> {label}</span>;
+-}
+-
+ function VarianceIcon({ pct }: { pct: number }) {
+   if (pct > 5) return <TrendingUp size={13} className="text-red-500" />;
+   if (pct < -5) return <TrendingDown size={13} className="text-emerald-500" />;
+@@ -457,7 +450,6 @@
+     setLoadingStage("Initializing forensic engine...");
+ 
+     try {
+-      const apiKey = import.meta.env.VITE_GROQ_API_KEY;
+       const fileList = files.map(f => f.name).join(", ") || "No files uploaded (manual entry)";
+ 
+       setLoadingStage("Running deep risk analysis...");
+@@ -535,33 +527,26 @@
+ 
+ Apply Ethiopian construction market context. Flag FIDIC risks, validate BoQ rates against current Addis Ababa/Ethiopian market rates (2024-2025), and assess methodology for ERA specification compliance. Be specific and actionable.`;
+ 
+-      const res = await fetch("https://api.groq.com/openai/v1/chat/completions", {
++      // Route through our own serverless proxy (api/check-analysis.js) so the
++      // Groq API key stays server-side. The proxy verifies this token against
++      // Supabase before calling Groq.
++      const { data: { session } } = await supabase.auth.getSession();
++      if (!session) throw new Error("You must be signed in to run an audit.");
++
++      const res = await fetch("/api/check-analysis", {
+         method: "POST",
+         headers: {
+           "Content-Type": "application/json",
+-          "Authorization": `Bearer ${apiKey}`
++          "Authorization": `Bearer ${session.access_token}`
+         },
+-        body: JSON.stringify({
+-          model: "llama-3.3-70b-versatile",
+-          temperature: 0.15,
+-          max_tokens: 4000,
+-          response_format: { type: "json_object" },
+-          messages: [
+-            { role: "system", content: systemPrompt },
+-            { role: "user", content: userPrompt }
+-          ]
+-        })
++        body: JSON.stringify({ systemPrompt, userPrompt })
+       });
+ 
+-      const data = await res.json();
+-      if (!res.ok) throw new Error(data.error?.message || `API Error ${res.status}`);
++      const analysis = await res.json();
++      if (!res.ok) throw new Error(analysis.error || `API Error ${res.status}`);
+ 
+       setLoadingStage("Processing audit findings...");
+ 
+-      let raw = data.choices?.[0]?.message?.content || "{}";
+-      raw = raw.replace(/```json/g, "").replace(/```/g, "").trim();
+-      const analysis = JSON.parse(raw);
+-
+       // Normalize risk score
+       let score = Number(analysis.risk_score || 50);
+       if (score > 0 && score < 1) score = score * 100;
+@@ -588,6 +573,7 @@
+           target_margin: Number(targetMargin),
+           risk_score: finalScore,
+           status: "completed",
++          workflow_status: "Draft",
+           analysis
+         });
+         dispatchAuditsUpdated();
+diff -ru original/src/routes/_authenticated/dashboard.tsx repo/src/routes/_authenticated/dashboard.tsx
+--- original/src/routes/_authenticated/dashboard.tsx	2026-07-01 10:24:24.789817353 +0000
++++ repo/src/routes/_authenticated/dashboard.tsx	2026-07-01 10:04:00.697294153 +0000
+@@ -9,6 +9,7 @@
+   AlertTriangle, FileSearch, CheckCircle2,
+   Shield, AlertOctagon, TrendingUp, ChevronRight, FileText,
+ } from "lucide-react";
++import { riskColor, riskLabel } from "@/components/RiskUtils";
+ 
+ export const Route = createFileRoute("/_authenticated/dashboard")({
+   head: () => ({ meta: [{ title: "Dashboard — Valtor" }] }),
+@@ -23,20 +24,6 @@
+   return Math.round(n).toLocaleString();
+ }
+ 
+-function riskColor(score: number | null) {
+-  if (score === null) return "#94A3B8";
+-  if (score < 40) return "#16A34A";
+-  if (score < 65) return "#D97706";
+-  return "#DC2626";
+-}
+-
+-function riskLabel(score: number | null) {
+-  if (score === null) return "—";
+-  if (score < 40) return "LOW";
+-  if (score < 65) return "MEDIUM";
+-  return "HIGH";
+-}
+-
+ // ─── Contract Flags ───────────────────────────────────────────────────────────
+ 
+ function ContractFlags({ analysis }: { analysis: any }) {
+diff -ru original/src/routes/_authenticated/history.tsx repo/src/routes/_authenticated/history.tsx
+--- original/src/routes/_authenticated/history.tsx	2026-07-01 10:24:24.789308187 +0000
++++ repo/src/routes/_authenticated/history.tsx	2026-07-01 10:22:13.787669607 +0000
+@@ -1,6 +1,8 @@
+ import { createFileRoute } from "@tanstack/react-router";
+ import { useEffect, useRef, useState } from "react";
+-import { deleteAudit, updateAuditWorkflowStatus, useAudits } from "@/integrations/supabase/audits";
++import { deleteAudit, updateAuditWorkflowStatus, useAudits, type AuditRow } from "@/integrations/supabase/audits";
++import type { WorkflowStatus } from "@/types/audit";
++import { riskClass } from "@/components/RiskUtils";
+ import {
+   Trash2,
+   FileText,
+@@ -15,20 +17,6 @@
+   component: HistoryPage,
+ });
+ 
+-type WorkflowStatus = "Draft" | "In Review" | "Approved" | "Rejected";
+-
+-type AuditRow = {
+-  id: string;
+-  project_name: string;
+-  file_name: string | null;
+-  contract_value: number;
+-  target_margin: number;
+-  risk_score: number | null;
+-  status: string;
+-  analysis: any;
+-  created_at: string;
+-};
+-
+ function workflowBadge(s: WorkflowStatus) {
+   if (s === "Draft") return <span className="badge badge-slate">Draft</span>;
+   if (s === "In Review") return <span className="badge badge-blue">In Review</span>;
+@@ -43,15 +31,8 @@
+   return <span className="badge badge-amber">Caution</span>;
+ }
+ 
+-function riskClass(score: number | null) {
+-  if (score === null) return "";
+-  if (score < 35) return "risk-low";
+-  if (score < 65) return "risk-medium";
+-  return "risk-high";
+-}
+-
+ // Minimal custom dropdown for the actions menu (no Radix dep needed)
+-function ActionsMenu({ onAction }: { onAction: (action: string) => void }) {
++function ActionsMenu({ onAction, disabled }: { onAction: (action: string) => void; disabled?: boolean }) {
+   const [open, setOpen] = useState(false);
+   const ref = useRef<HTMLDivElement>(null);
+ 
+@@ -75,7 +56,8 @@
+       <button
+         className="btn-ghost"
+         onClick={() => setOpen((v) => !v)}
+-        style={{ padding: "0.3rem 0.5rem", gap: "0.2rem" }}
++        disabled={disabled}
++        style={{ padding: "0.3rem 0.5rem", gap: "0.2rem", opacity: disabled ? 0.5 : 1 }}
+       >
+         Actions <ChevronDown size={11} />
+       </button>
+@@ -124,15 +106,7 @@
+ function HistoryPage() {
+   const { audits, loading, reload } = useAudits();
+   const [selected, setSelected] = useState<AuditRow | null>(null);
+-  const [workflow, setWorkflow] = useState<Record<string, WorkflowStatus>>({});
+-
+-  useEffect(() => {
+-    setWorkflow((prev) => {
+-      const next = { ...prev };
+-      audits.forEach((r) => { if (!next[r.id]) next[r.id] = "Draft"; });
+-      return next;
+-    });
+-  }, [audits]);
++  const [pendingIds, setPendingIds] = useState<Set<string>>(new Set());
+ 
+   const remove = async (id: string) => {
+     await deleteAudit(id);
+@@ -140,8 +114,21 @@
+     reload();
+   };
+ 
+-  const setStatus = (id: string, status: string) => {
+-    setWorkflow((prev) => ({ ...prev, [id]: status as WorkflowStatus }));
++  const setStatus = async (id: string, status: WorkflowStatus) => {
++    setPendingIds((prev) => new Set(prev).add(id));
++    try {
++      await updateAuditWorkflowStatus(id, status);
++      await reload();
++      setSelected((prev) => (prev && prev.id === id ? { ...prev, workflow_status: status } : prev));
++    } catch (err) {
++      console.error("Failed to update workflow status:", err);
++    } finally {
++      setPendingIds((prev) => {
++        const next = new Set(prev);
++        next.delete(id);
++        return next;
++      });
++    }
+   };
+ 
+   return (
+@@ -201,14 +188,14 @@
+                     </td>
+                     <td>{recBadge(r.analysis?.recommendation)}</td>
+                     <td onClick={(e) => e.stopPropagation()}>
+-                      {workflowBadge(workflow[r.id] ?? "Draft")}
++                      {workflowBadge(r.workflow_status ?? "Draft")}
+                     </td>
+                     <td className="text-right muted" style={{ whiteSpace: "nowrap" }}>
+                       {new Date(r.created_at).toLocaleDateString("en-GB", { day: "2-digit", month: "short", year: "numeric" })}
+                     </td>
+                     <td onClick={(e) => e.stopPropagation()}>
+                       <div style={{ display: "flex", alignItems: "center", gap: "0.375rem", justifyContent: "flex-end" }}>
+-                        <ActionsMenu onAction={(v) => setStatus(r.id, v)} />
++                        <ActionsMenu onAction={(v) => setStatus(r.id, v as WorkflowStatus)} disabled={pendingIds.has(r.id)} />
+                         <button
+                           onClick={() => remove(r.id)}
+                           className="btn-ghost"
+@@ -281,7 +268,7 @@
+ 
+             <div style={{ marginBottom: "0.75rem" }}>
+               <div className="section-label">Approval Status</div>
+-              {workflowBadge(workflow[selected.id] ?? "Draft")}
++              {workflowBadge(selected.workflow_status ?? "Draft")}
+             </div>
+ 
+             <details>
+diff -ru original/src/types/audit.ts repo/src/types/audit.ts
+--- original/src/types/audit.ts	2026-07-01 10:24:24.788623164 +0000
++++ repo/src/types/audit.ts	2026-07-01 10:02:02.884663244 +0000
+@@ -0,0 +1,61 @@
++// src/types/audit.ts
++//
++// Shared types for the shape of an audit's stored `analysis` JSON blob.
++// This mirrors the JSON structure the forensic-audit LLM prompt (see
++// src/routes/_authenticated/audit.tsx) is instructed to return, and that
++// gets persisted as-is into the `audits.analysis` jsonb column.
++
++export type Severity = "CRITICAL" | "HIGH" | "MEDIUM" | "LOW";
++
++export type ContractualTrap = {
++  clause_type: string;
++  fidic_ref: string;
++  severity: Severity;
++  description: string;
++  recommendation: string;
++};
++
++export type MarketVarianceItem = {
++  item: string;
++  category: string;
++  our_rate: number;
++  market_rate: number;
++  variance_pct: number;
++  unit: string;
++  note: string;
++};
++
++export type ArithmeticError = {
++  location: string;
++  description: string;
++  severity: Exclude<Severity, "CRITICAL">;
++  financial_impact: number;
++};
++
++export type ScopeGap = {
++  missing_element: string;
++  risk_impact: string;
++  estimated_cost_etb: number;
++};
++
++export type Recommendation = "PROCEED" | "PROCEED_WITH_CAUTION" | "DECLINE";
++
++export type AuditAnalysis = {
++  risk_score: number;
++  recommendation: Recommendation;
++  executive_summary: string;
++  technical_critique: string;
++  methodology_strengths: string[];
++  methodology_weaknesses: string[];
++  arithmetic_errors: ArithmeticError[];
++  contractual_traps: ContractualTrap[];
++  market_variance: MarketVarianceItem[];
++  scope_gaps: ScopeGap[];
++  resource_gap_analysis: string;
++  plant_adequacy_assessment: string;
++  regulatory_compliance: string;
++  financial_risk_summary: string;
++  key_risks: string[];
++};
++
++export type WorkflowStatus = "Draft" | "In Review" | "Approved" | "Rejected";
+Only in repo/supabase/migrations: 002_workflow_status.sql
+</file>
+
 <file path="vercel.json">
 {
   "rewrites": [
@@ -2305,37 +2918,74 @@ import path from "node:path";
 import tailwindcss from "@tailwindcss/vite";
 import { tanstackRouter } from "@tanstack/router-plugin/vite";
 import react from "@vitejs/plugin-react";
-import { defineConfig } from "vite";
+import { defineConfig, loadEnv, type Plugin } from "vite";
 
-export default defineConfig({
-  plugins: [
-    tanstackRouter({
-      target: "react",
-      routesDirectory: "./src/routes",
-      generatedRouteTree: "./src/routeTree.gen.ts",
-      quoteStyle: "double",
-      semicolons: true,
-    }),
-    react(),
-    tailwindcss(),
-  ],
-  resolve: {
-    alias: {
-      "@": path.resolve(__dirname, "./src"),
+function localApiPlugin(env: Record<string, string>): Plugin {
+  return {
+    name: "local-api-check-analysis",
+    configureServer(server) {
+      server.middlewares.use("/api/check-analysis", async (req: any, res: any) => {
+        Object.assign(process.env, env); // exposes GROQ_API_KEY etc. to the handler, same as Vercel does in prod
+        const { default: handler } = await import("./api/check-analysis.js");
+
+        let raw = "";
+        req.on("data", (chunk: Buffer) => (raw += chunk));
+        req.on("end", async () => {
+          try {
+            req.body = raw ? JSON.parse(raw) : {};
+            res.status = (code: number) => {
+              res.statusCode = code;
+              return res;
+            };
+            res.json = (data: unknown) => {
+              res.setHeader("Content-Type", "application/json");
+              res.end(JSON.stringify(data));
+            };
+            await handler(req, res);
+          } catch (err) {
+            res.statusCode = 500;
+            res.setHeader("Content-Type", "application/json");
+            res.end(JSON.stringify({ error: "Local API adapter failed", detail: String(err) }));
+          }
+        });
+      });
     },
-  },
-  build: {
-    rollupOptions: {
-      output: {
-        manualChunks: {
-          charts: ["recharts"],
-          excel: ["xlsx"],
-          supabase: ["@supabase/supabase-js"],
-          vendor: ["react", "react-dom", "@tanstack/react-router"],
+  };
+}
+
+export default defineConfig(({ mode }) => {
+  const env = loadEnv(mode, process.cwd(), ""); // "" = load ALL vars, not just VITE_-prefixed ones
+  return {
+    plugins: [
+      tanstackRouter({
+        target: "react",
+        routesDirectory: "./src/routes",
+        generatedRouteTree: "./src/routeTree.gen.ts",
+        quoteStyle: "double",
+        semicolons: true,
+      }),
+      react(),
+      tailwindcss(),
+      localApiPlugin(env),
+    ],
+    resolve: {
+      alias: {
+        "@": path.resolve(__dirname, "./src"),
+      },
+    },
+    build: {
+      rollupOptions: {
+        output: {
+          manualChunks: {
+            charts: ["recharts"],
+            excel: ["xlsx"],
+            supabase: ["@supabase/supabase-js"],
+            vendor: ["react", "react-dom", "@tanstack/react-router"],
+          },
         },
       },
     },
-  },
+  };
 });
 </file>
 
@@ -3059,382 +3709,6 @@ function AuthPage() {
 }
 </file>
 
-<file path="src/routes/index.tsx">
-import { createFileRoute, Link } from "@tanstack/react-router";
-import { Cpu, ShieldCheck, BarChart3, Globe, ArrowRight, Activity, AlertTriangle } from "lucide-react";
-import { HeroBuildingScene } from "@/components/HeroBuildingScene";
-
-export const Route = createFileRoute("/")({
-  head: () => ({
-    meta: [
-      { title: "Valtor — Bid Intelligence & Infrastructure Risk" },
-      { name: "description", content: "The industrial standard for neural BoQ analysis and infrastructure tender evaluation." },
-      { property: "og:title", content: "Valtor — Bid Intelligence & Infrastructure Risk" },
-      { property: "og:description", content: "Quantifying construction bid risk for industrial procurement." },
-    ],
-  }),
-  component: Index,
-});
-
-function Label({ children }: { children: React.ReactNode }) {
-  return <span className="label-xs text-slate-500">{children}</span>;
-}
-
-function IconBox({ children }: { children: React.ReactNode }) {
-  return (
-    <div className="inline-flex h-9 w-9 items-center justify-center border border-slate-200 bg-white text-slate-900">
-      {children}
-    </div>
-  );
-}
-
-function Index() {
-  return (
-    <div className="min-h-screen bg-white text-slate-900 font-sans">
-      {/* NAV */}
-      <header className="border-b border-slate-200 bg-white">
-        <div className="mx-auto flex max-w-7xl items-center justify-between px-6 py-4">
-          <div className="flex items-center gap-3">
-            <div className="flex h-7 w-7 items-center justify-center bg-slate-900">
-              <div className="h-2 w-2 bg-white" />
-            </div>
-            <span className="text-sm font-black uppercase tracking-[0.2em] text-slate-900">
-              Valtor
-            </span>
-            <span className="ml-3 hidden label-xs text-slate-400 md:inline">
-              / Bid Intelligence System
-            </span>
-          </div>
-          <nav className="flex items-center gap-2">
-            <Link
-              to="/auth"
-              className="label-xs border border-slate-200 bg-white px-4 py-2.5 text-slate-900 transition-colors hover:border-slate-900 hover:bg-slate-900 hover:text-white"
-            >
-              Operator Login
-            </Link>
-            <Link
-              to="/auth"
-              className="label-xs flex items-center gap-2 border border-slate-900 bg-slate-900 px-4 py-2.5 text-white transition-colors hover:border-indigo-600 hover:bg-indigo-600"
-            >
-              Access Terminal
-              <ArrowRight className="h-3 w-3" strokeWidth={2.5} />
-            </Link>
-          </nav>
-        </div>
-      </header>
-
-      {/* HERO */}
-      <section className="relative border-b border-slate-200 overflow-hidden">
-        {/* Grid background — unchanged */}
-        <div className="absolute inset-0 grid-bg pointer-events-none" />
-
-        <div className="relative mx-auto max-w-7xl px-6 py-20 md:py-28">
-          <div className="grid grid-cols-1 items-center gap-10 lg:grid-cols-[1fr_520px]">
-
-            {/* ── LEFT: existing content ── */}
-            <div>
-              {/* eyebrow */}
-              <div className="mb-10 flex items-center gap-3">
-                <span className="inline-block h-1.5 w-1.5 bg-indigo-600" />
-                <Label>System Online — Index v1.0.4</Label>
-              </div>
-
-              <h1 className="max-w-5xl text-5xl font-black uppercase tracking-tighter leading-[0.95] text-slate-900 md:text-7xl lg:text-[80px]">
-                Quantifying<br />Construction<br />
-                <span className="text-slate-400">Bid Risk.</span>
-              </h1>
-
-              <p className="mt-10 max-w-xl text-base leading-relaxed text-slate-600 md:text-lg">
-                The industrial standard for neural BoQ analysis and infrastructure
-                tender evaluation. Built for operators of national-scale
-                procurement programs.
-              </p>
-
-              <div className="mt-12 flex flex-wrap items-center gap-3">
-                <Link
-                  to="/auth"
-                  className="label-xs flex items-center gap-3 border border-slate-900 bg-slate-900 px-6 py-4 text-white transition-colors hover:border-indigo-600 hover:bg-indigo-600"
-                >
-                  Initiate System Audit
-                  <ArrowRight className="h-3.5 w-3.5" strokeWidth={2.5} />
-                </Link>
-                <button className="label-xs border border-slate-200 bg-white px-6 py-4 text-slate-900 transition-colors hover:border-slate-900">
-                  View Technical Brief
-                </button>
-              </div>
-
-              {/* spec strip */}
-              <div className="mt-20 grid grid-cols-2 gap-px border border-slate-200 bg-slate-200 md:grid-cols-4">
-                {[
-                  ["Tender Volume", "$12.4B"],
-                  ["Active Pipelines", "184"],
-                  ["Risk Models", "27"],
-                  ["Latency", "1.2s"],
-                ].map(([k, v]) => (
-                  <div key={k} className="bg-white px-5 py-5">
-                    <Label>{k}</Label>
-                    <div className="mt-2 font-mono text-2xl font-bold tracking-tight text-slate-900">
-                      {v}
-                    </div>
-                  </div>
-                ))}
-              </div>
-            </div>
-
-            {/* ── RIGHT: 3D construction scene ── */}
-            {/*
-              Hidden below lg breakpoint. The canvas is transparent so the
-              grid-bg behind the hero section shows through naturally.
-            */}
-            <div
-              className="relative hidden lg:flex items-center justify-center"
-              style={{ height: "560px" }}
-            >
-              {/* Subtle radial vignette at the edges so the scene fades into the page */}
-              <div
-                className="absolute inset-0 pointer-events-none z-10"
-                style={{
-                  background:
-                    "radial-gradient(ellipse at center, transparent 40%, rgba(255,255,255,0.55) 100%)",
-                }}
-              />
-              <HeroBuildingScene />
-            </div>
-
-          </div>
-        </div>
-      </section>
-
-      {/* NEURAL ENGINE */}
-      <section className="border-b border-slate-200">
-        <div className="mx-auto max-w-7xl px-6 py-24">
-          <div className="mb-16 flex flex-col gap-4 md:flex-row md:items-end md:justify-between">
-            <div>
-              <div className="mb-4 flex items-center gap-2">
-                <span className="inline-block h-1.5 w-1.5 bg-indigo-600" />
-                <Label>Module 02 / Neural Engine</Label>
-              </div>
-              <h2 className="max-w-2xl text-3xl font-black uppercase tracking-tighter text-slate-900 md:text-5xl">
-                The computational layer beneath every decision.
-              </h2>
-            </div>
-            <div className="font-mono text-xs text-slate-400">
-              REV. 2026.06 / CORE
-            </div>
-          </div>
-
-          <div className="grid grid-cols-1 gap-px border border-slate-200 bg-slate-200 md:grid-cols-3">
-            {[
-              {
-                icon: <Cpu className="h-4 w-4" strokeWidth={2} />,
-                label: "01 / BoQ Calibration",
-                title: "Bill-of-Quantities Calibration",
-                body: "Cross-referencing line items against regional market indices, supplier benchmarks, and historical cost performance.",
-              },
-              {
-                icon: <ShieldCheck className="h-4 w-4" strokeWidth={2} />,
-                label: "02 / Risk Indexing",
-                title: "Contractual Risk Indexing",
-                body: "Quantifying contractual and logistical slippage probability across the project lifecycle with deterministic models.",
-              },
-              {
-                icon: <Globe className="h-4 w-4" strokeWidth={2} />,
-                label: "03 / Terminal Pipeline",
-                title: "Procurement Pipeline",
-                body: "Integrated procurement feeds from ERA, PPSA, and ECAA, normalised into a single tender intelligence stream.",
-              },
-            ].map((c) => (
-              <div key={c.label} className="group bg-white p-8 transition-colors hover:bg-zinc-50">
-                <div className="flex items-center justify-between">
-                  <IconBox>{c.icon}</IconBox>
-                  <Label>{c.label}</Label>
-                </div>
-                <h3 className="mt-10 text-xl font-bold uppercase tracking-tight text-slate-900">
-                  {c.title}
-                </h3>
-                <p className="mt-3 text-sm leading-relaxed text-slate-600">
-                  {c.body}
-                </p>
-                <div className="mt-10 flex items-center gap-2 border-t border-slate-200 pt-4 label-xs text-slate-400 group-hover:text-indigo-600">
-                  Read Specification
-                  <ArrowRight className="h-3 w-3" strokeWidth={2.5} />
-                </div>
-              </div>
-            ))}
-          </div>
-        </div>
-      </section>
-
-      {/* ENGINEERING READOUT */}
-      <section id="engineering-readout" className="border-b border-slate-200 bg-zinc-50">
-        <div className="mx-auto max-w-7xl px-6 py-24">
-          <div className="mb-12 flex items-center gap-2">
-            <span className="inline-block h-1.5 w-1.5 bg-indigo-600" />
-            <Label>Module 03 / Engineering Readout</Label>
-          </div>
-
-          <div className="grid grid-cols-1 gap-12 lg:grid-cols-[1fr_1.4fr]">
-            <div>
-              <h2 className="text-3xl font-black uppercase tracking-tighter text-slate-900 md:text-5xl">
-                Read a tender like a spec sheet.
-              </h2>
-              <p className="mt-6 max-w-md text-sm leading-relaxed text-slate-600">
-                Every bid is decomposed into deterministic variables. The
-                Engineering Readout surfaces variance, slippage exposure, and
-                margin integrity in a single, audit-ready frame.
-              </p>
-              <div className="mt-10 space-y-3 border-t border-slate-200 pt-6">
-                {[
-                  ["Source", "PPSA-EX-2418"],
-                  ["Issued", "2026.06.14 / 09:42Z"],
-                  ["Analyst", "OP-2207"],
-                  ["Compliance", "ISO 19650 / Tier 1"],
-                ].map(([k, v]) => (
-                  <div key={k} className="flex items-center justify-between font-mono text-xs">
-                    <span className="label-xs text-slate-400">{k}</span>
-                    <span className="text-slate-900">{v}</span>
-                  </div>
-                ))}
-              </div>
-            </div>
-
-            {/* Readout panel */}
-            <div className="border border-slate-300 bg-white">
-              {/* terminal header */}
-              <div className="flex items-center justify-between border-b border-slate-300 bg-slate-900 px-5 py-3">
-                <div className="flex items-center gap-3">
-                  <Activity className="h-3.5 w-3.5 text-indigo-400" strokeWidth={2.5} />
-                  <span className="label-xs text-white">Engineering Readout · LIVE</span>
-                </div>
-                <span className="font-mono text-[10px] text-slate-400">VLT://stream/0x4F2A</span>
-              </div>
-
-              <div className="grid grid-cols-2 gap-px border-b border-slate-300 bg-slate-200">
-                <div className="bg-white px-5 py-4">
-                  <Label>Project ID</Label>
-                  <div className="mt-1 font-mono text-sm font-bold text-slate-900">
-                    AAU-MTR-PH3-204
-                  </div>
-                </div>
-                <div className="bg-white px-5 py-4">
-                  <Label>Contract Value</Label>
-                  <div className="mt-1 font-mono text-sm font-bold text-slate-900">
-                    USD 482,140,000
-                  </div>
-                </div>
-              </div>
-
-              <div className="border-b border-slate-300 p-6">
-                <div className="flex items-end justify-between">
-                  <div>
-                    <Label>Composite Risk Index</Label>
-                    <div className="mt-2 font-black tracking-tighter text-slate-900 text-6xl">
-                      67.4<span className="text-2xl text-slate-400">%</span>
-                    </div>
-                  </div>
-                  <div className="text-right">
-                    <Label>Status</Label>
-                    <div className="mt-2 inline-flex items-center gap-2 border border-slate-900 bg-slate-900 px-3 py-1.5 text-white">
-                      <AlertTriangle className="h-3 w-3" strokeWidth={2.5} />
-                      <span className="label-xs">Variance Detected</span>
-                    </div>
-                  </div>
-                </div>
-
-                {/* bar */}
-                <div className="mt-6 h-1.5 w-full bg-slate-100">
-                  <div className="h-full bg-indigo-600" style={{ width: "67.4%" }} />
-                </div>
-                <div className="mt-2 flex justify-between font-mono text-[10px] text-slate-400">
-                  <span>0.0</span>
-                  <span>THRESHOLD 55.0</span>
-                  <span>100.0</span>
-                </div>
-              </div>
-
-              {/* line items */}
-              <div className="divide-y divide-slate-200">
-                {[
-                  ["Earthworks / Excavation", "+4.20%", "NOMINAL"],
-                  ["Reinforced Concrete C40", "+11.80%", "FLAGGED"],
-                  ["Steel Reinforcement Bar", "+18.05%", "FLAGGED"],
-                  ["MEP Subcontract Package", "+2.10%", "NOMINAL"],
-                  ["Logistics & Mobilisation", "+7.60%", "WATCH"],
-                ].map(([item, val, status]) => (
-                  <div key={item} className="grid grid-cols-[1fr_auto_auto] items-center gap-6 px-5 py-3 font-mono text-xs">
-                    <span className="text-slate-700">{item}</span>
-                    <span className="text-slate-900">{val}</span>
-                    <span
-                      className={
-                        "label-xs " +
-                        (status === "FLAGGED"
-                          ? "text-indigo-600"
-                          : status === "WATCH"
-                            ? "text-slate-900"
-                            : "text-slate-400")
-                      }
-                    >
-                      {status}
-                    </span>
-                  </div>
-                ))}
-              </div>
-
-              <div className="flex items-center justify-between border-t border-slate-300 bg-zinc-50 px-5 py-3">
-                <div className="flex items-center gap-2">
-                  <BarChart3 className="h-3.5 w-3.5 text-slate-500" strokeWidth={2} />
-                  <span className="label-xs text-slate-500">Model VLT-Core 4.2</span>
-                </div>
-                <span className="font-mono text-[10px] text-slate-400">
-                  T+0.84s / 2,418 variables
-                </span>
-              </div>
-            </div>
-          </div>
-        </div>
-      </section>
-
-      {/* CTA */}
-      <section className="border-b border-slate-200">
-        <div className="mx-auto flex max-w-7xl flex-col items-start justify-between gap-8 px-6 py-20 md:flex-row md:items-center">
-          <div>
-            <Label>Restricted Access</Label>
-            <h3 className="mt-4 max-w-2xl text-3xl font-black uppercase tracking-tighter text-slate-900 md:text-4xl">
-              Deploy Valtor against your active tender book.
-            </h3>
-          </div>
-          <Link
-            to="/auth"
-            className="label-xs flex items-center gap-3 border border-slate-900 bg-slate-900 px-6 py-4 text-white transition-colors hover:border-indigo-600 hover:bg-indigo-600"
-          >
-            Initiate System Audit
-            <ArrowRight className="h-3.5 w-3.5" strokeWidth={2.5} />
-          </Link>
-        </div>
-      </section>
-
-      {/* FOOTER */}
-      <footer className="bg-white">
-        <div className="mx-auto grid max-w-7xl grid-cols-1 gap-6 px-6 py-10 md:grid-cols-3">
-          <div className="flex items-center gap-3">
-            <div className="flex h-6 w-6 items-center justify-center bg-slate-900">
-              <div className="h-1.5 w-1.5 bg-white" />
-            </div>
-            <span className="label-xs text-slate-900">Valtor Systems</span>
-          </div>
-          <div className="font-mono text-[11px] text-slate-500 md:text-center">
-            Restricted Proprietary System — Unauthorized access prohibited.
-          </div>
-          <div className="font-mono text-[11px] text-slate-400 md:text-right">
-            BUILD v1.0.4 · SHA 0x4F2A · © 2026
-          </div>
-        </div>
-      </footer>
-    </div>
-  );
-}
-</file>
-
 <file path="src/routeTree.gen.ts">
 /* eslint-disable */
 
@@ -4025,6 +4299,387 @@ export const routeTree = rootRouteImport
 }
 </file>
 
+<file path="src/routes/index.tsx">
+import { createFileRoute, Link } from "@tanstack/react-router";
+import { Cpu, ShieldCheck, BarChart3, Globe, ArrowRight, Activity, AlertTriangle } from "lucide-react";
+import { HeroBuildingScene } from "@/components/HeroBuildingScene";
+
+export const Route = createFileRoute("/")({
+  head: () => ({
+    meta: [
+      { title: "Valtor — Bid Intelligence & Infrastructure Risk" },
+      { name: "description", content: "The industrial standard for neural BoQ analysis and infrastructure tender evaluation." },
+      { property: "og:title", content: "Valtor — Bid Intelligence & Infrastructure Risk" },
+      { property: "og:description", content: "Quantifying construction bid risk for industrial procurement." },
+    ],
+  }),
+  component: Index,
+});
+
+function Label({ children }: { children: React.ReactNode }) {
+  return <span className="label-xs text-slate-500">{children}</span>;
+}
+
+function IconBox({ children }: { children: React.ReactNode }) {
+  return (
+    <div className="inline-flex h-9 w-9 items-center justify-center border border-slate-200 bg-white text-slate-900">
+      {children}
+    </div>
+  );
+}
+
+function Index() {
+  // Scroll to the Engineering Readout / analytics section
+  const scrollToAnalytics = () => {
+    document
+      .getElementById("engineering-readout")
+      ?.scrollIntoView({ behavior: "smooth", block: "start" });
+  };
+
+  return (
+    <div className="min-h-screen bg-white text-slate-900 font-sans">
+      {/* NAV */}
+      <header className="border-b border-slate-200 bg-white">
+        <div className="mx-auto flex max-w-7xl items-center justify-between px-6 py-4">
+          <div className="flex items-center gap-3">
+            <div className="flex h-7 w-7 items-center justify-center bg-slate-900">
+              <div className="h-2 w-2 bg-white" />
+            </div>
+            <span className="text-sm font-black uppercase tracking-[0.2em] text-slate-900">
+              Valtor
+            </span>
+            <span className="ml-3 hidden label-xs text-slate-400 md:inline">
+              / Bid Intelligence System
+            </span>
+          </div>
+          <nav className="flex items-center gap-2">
+            <Link
+              to="/auth"
+              className="label-xs border border-slate-200 bg-white px-4 py-2.5 text-slate-900 transition-colors hover:border-slate-900 hover:bg-slate-900 hover:text-white"
+            >
+              Operator Login
+            </Link>
+            <Link
+              to="/auth"
+              className="label-xs flex items-center gap-2 border border-slate-900 bg-slate-900 px-4 py-2.5 text-white transition-colors hover:border-indigo-600 hover:bg-indigo-600"
+            >
+              Access Terminal
+              <ArrowRight className="h-3 w-3" strokeWidth={2.5} />
+            </Link>
+          </nav>
+        </div>
+      </header>
+
+      {/* HERO
+          overflow-visible so the BIM canvas can bleed outside the section
+          boundary without being clipped. The grid-bg sits on its own
+          overflow-hidden layer so it stays contained.
+      */}
+      <section className="relative border-b border-slate-200 overflow-visible">
+        {/* Grid background — contained to its own layer */}
+        <div className="absolute inset-0 grid-bg pointer-events-none overflow-hidden" />
+
+        <div className="relative mx-auto max-w-7xl px-6 py-20 md:py-28">
+          <div className="grid grid-cols-1 items-center gap-10 lg:grid-cols-[1fr_520px]">
+
+            {/* ── LEFT ── */}
+            <div>
+              <div className="mb-10 flex items-center gap-3">
+                <span className="inline-block h-1.5 w-1.5 bg-indigo-600" />
+                <Label>System Online — Index v1.0.4</Label>
+              </div>
+
+              <h1 className="max-w-5xl text-5xl font-black uppercase tracking-tighter leading-[0.95] text-slate-900 md:text-7xl lg:text-[80px]">
+                Quantifying<br />Construction<br />
+                <span className="text-slate-400">Bid Risk.</span>
+              </h1>
+
+              <p className="mt-10 max-w-xl text-base leading-relaxed text-slate-600 md:text-lg">
+                The industrial standard for neural BoQ analysis and infrastructure
+                tender evaluation. Built for operators of national-scale
+                procurement programs.
+              </p>
+
+              <div className="mt-12 flex flex-wrap items-center gap-3">
+                <Link
+                  to="/auth"
+                  className="label-xs flex items-center gap-3 border border-slate-900 bg-slate-900 px-6 py-4 text-white transition-colors hover:border-indigo-600 hover:bg-indigo-600"
+                >
+                  Initiate System Audit
+                  <ArrowRight className="h-3.5 w-3.5" strokeWidth={2.5} />
+                </Link>
+
+                {/* Scrolls smoothly to the Engineering Readout section */}
+                <button
+                  onClick={scrollToAnalytics}
+                  className="label-xs border border-slate-200 bg-white px-6 py-4 text-slate-900 transition-colors hover:border-slate-900 cursor-pointer"
+                >
+                  View Technical Brief
+                </button>
+              </div>
+
+              {/* spec strip */}
+              <div className="mt-20 grid grid-cols-2 gap-px border border-slate-200 bg-slate-200 md:grid-cols-4">
+                {[
+                  ["Tender Volume", "$12.4B"],
+                  ["Active Pipelines", "184"],
+                  ["Risk Models", "27"],
+                  ["Latency", "1.2s"],
+                ].map(([k, v]) => (
+                  <div key={k} className="bg-white px-5 py-5">
+                    <Label>{k}</Label>
+                    <div className="mt-2 font-mono text-2xl font-bold tracking-tight text-slate-900">
+                      {v}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            {/* ── RIGHT: BIM scene ──
+                overflow-visible removes the invisible rectangular clip that was
+                cutting the canvas drawing surface to the column bounds.
+                The vignette overlay is removed — the scene already renders a
+                transparent background so the page bg shows through naturally.
+            */}
+            <div
+              className="relative hidden lg:flex items-center justify-center"
+              style={{ height: "560px", overflow: "visible" }}
+            >
+              <HeroBuildingScene />
+            </div>
+
+          </div>
+        </div>
+      </section>
+
+      {/* NEURAL ENGINE */}
+      <section className="border-b border-slate-200">
+        <div className="mx-auto max-w-7xl px-6 py-24">
+          <div className="mb-16 flex flex-col gap-4 md:flex-row md:items-end md:justify-between">
+            <div>
+              <div className="mb-4 flex items-center gap-2">
+                <span className="inline-block h-1.5 w-1.5 bg-indigo-600" />
+                <Label>Module 02 / Neural Engine</Label>
+              </div>
+              <h2 className="max-w-2xl text-3xl font-black uppercase tracking-tighter text-slate-900 md:text-5xl">
+                The computational layer beneath every decision.
+              </h2>
+            </div>
+            <div className="font-mono text-xs text-slate-400">
+              REV. 2026.06 / CORE
+            </div>
+          </div>
+
+          <div className="grid grid-cols-1 gap-px border border-slate-200 bg-slate-200 md:grid-cols-3">
+            {[
+              {
+                icon: <Cpu className="h-4 w-4" strokeWidth={2} />,
+                label: "01 / BoQ Calibration",
+                title: "Bill-of-Quantities Calibration",
+                body: "Cross-referencing line items against regional market indices, supplier benchmarks, and historical cost performance.",
+              },
+              {
+                icon: <ShieldCheck className="h-4 w-4" strokeWidth={2} />,
+                label: "02 / Risk Indexing",
+                title: "Contractual Risk Indexing",
+                body: "Quantifying contractual and logistical slippage probability across the project lifecycle with deterministic models.",
+              },
+              {
+                icon: <Globe className="h-4 w-4" strokeWidth={2} />,
+                label: "03 / Terminal Pipeline",
+                title: "Procurement Pipeline",
+                body: "Integrated procurement feeds from ERA, PPSA, and ECAA, normalised into a single tender intelligence stream.",
+              },
+            ].map((c) => (
+              <div key={c.label} className="group bg-white p-8 transition-colors hover:bg-zinc-50">
+                <div className="flex items-center justify-between">
+                  <IconBox>{c.icon}</IconBox>
+                  <Label>{c.label}</Label>
+                </div>
+                <h3 className="mt-10 text-xl font-bold uppercase tracking-tight text-slate-900">
+                  {c.title}
+                </h3>
+                <p className="mt-3 text-sm leading-relaxed text-slate-600">
+                  {c.body}
+                </p>
+                <div className="mt-10 flex items-center gap-2 border-t border-slate-200 pt-4 label-xs text-slate-400 group-hover:text-indigo-600">
+                  Read Specification
+                  <ArrowRight className="h-3 w-3" strokeWidth={2.5} />
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      </section>
+
+      {/* ENGINEERING READOUT — scroll target for "View Technical Brief" */}
+      <section id="engineering-readout" className="border-b border-slate-200 bg-zinc-50">
+        <div className="mx-auto max-w-7xl px-6 py-24">
+          <div className="mb-12 flex items-center gap-2">
+            <span className="inline-block h-1.5 w-1.5 bg-indigo-600" />
+            <Label>Module 03 / Engineering Readout</Label>
+          </div>
+
+          <div className="grid grid-cols-1 gap-12 lg:grid-cols-[1fr_1.4fr]">
+            <div>
+              <h2 className="text-3xl font-black uppercase tracking-tighter text-slate-900 md:text-5xl">
+                Read a tender like a spec sheet.
+              </h2>
+              <p className="mt-6 max-w-md text-sm leading-relaxed text-slate-600">
+                Every bid is decomposed into deterministic variables. The
+                Engineering Readout surfaces variance, slippage exposure, and
+                margin integrity in a single, audit-ready frame.
+              </p>
+              <div className="mt-10 space-y-3 border-t border-slate-200 pt-6">
+                {[
+                  ["Source", "PPSA-EX-2418"],
+                  ["Issued", "2026.06.14 / 09:42Z"],
+                  ["Analyst", "OP-2207"],
+                  ["Compliance", "ISO 19650 / Tier 1"],
+                ].map(([k, v]) => (
+                  <div key={k} className="flex items-center justify-between font-mono text-xs">
+                    <span className="label-xs text-slate-400">{k}</span>
+                    <span className="text-slate-900">{v}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            {/* Readout panel */}
+            <div className="border border-slate-300 bg-white">
+              <div className="flex items-center justify-between border-b border-slate-300 bg-slate-900 px-5 py-3">
+                <div className="flex items-center gap-3">
+                  <Activity className="h-3.5 w-3.5 text-indigo-400" strokeWidth={2.5} />
+                  <span className="label-xs text-white">Engineering Readout · LIVE</span>
+                </div>
+                <span className="font-mono text-[10px] text-slate-400">VLT://stream/0x4F2A</span>
+              </div>
+
+              <div className="grid grid-cols-2 gap-px border-b border-slate-300 bg-slate-200">
+                <div className="bg-white px-5 py-4">
+                  <Label>Project ID</Label>
+                  <div className="mt-1 font-mono text-sm font-bold text-slate-900">
+                    AAU-MTR-PH3-204
+                  </div>
+                </div>
+                <div className="bg-white px-5 py-4">
+                  <Label>Contract Value</Label>
+                  <div className="mt-1 font-mono text-sm font-bold text-slate-900">
+                    USD 482,140,000
+                  </div>
+                </div>
+              </div>
+
+              <div className="border-b border-slate-300 p-6">
+                <div className="flex items-end justify-between">
+                  <div>
+                    <Label>Composite Risk Index</Label>
+                    <div className="mt-2 font-black tracking-tighter text-slate-900 text-6xl">
+                      67.4<span className="text-2xl text-slate-400">%</span>
+                    </div>
+                  </div>
+                  <div className="text-right">
+                    <Label>Status</Label>
+                    <div className="mt-2 inline-flex items-center gap-2 border border-slate-900 bg-slate-900 px-3 py-1.5 text-white">
+                      <AlertTriangle className="h-3 w-3" strokeWidth={2.5} />
+                      <span className="label-xs">Variance Detected</span>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="mt-6 h-1.5 w-full bg-slate-100">
+                  <div className="h-full bg-indigo-600" style={{ width: "67.4%" }} />
+                </div>
+                <div className="mt-2 flex justify-between font-mono text-[10px] text-slate-400">
+                  <span>0.0</span>
+                  <span>THRESHOLD 55.0</span>
+                  <span>100.0</span>
+                </div>
+              </div>
+
+              <div className="divide-y divide-slate-200">
+                {[
+                  ["Earthworks / Excavation", "+4.20%", "NOMINAL"],
+                  ["Reinforced Concrete C40", "+11.80%", "FLAGGED"],
+                  ["Steel Reinforcement Bar", "+18.05%", "FLAGGED"],
+                  ["MEP Subcontract Package", "+2.10%", "NOMINAL"],
+                  ["Logistics & Mobilisation", "+7.60%", "WATCH"],
+                ].map(([item, val, status]) => (
+                  <div key={item} className="grid grid-cols-[1fr_auto_auto] items-center gap-6 px-5 py-3 font-mono text-xs">
+                    <span className="text-slate-700">{item}</span>
+                    <span className="text-slate-900">{val}</span>
+                    <span
+                      className={
+                        "label-xs " +
+                        (status === "FLAGGED"
+                          ? "text-indigo-600"
+                          : status === "WATCH"
+                            ? "text-slate-900"
+                            : "text-slate-400")
+                      }
+                    >
+                      {status}
+                    </span>
+                  </div>
+                ))}
+              </div>
+
+              <div className="flex items-center justify-between border-t border-slate-300 bg-zinc-50 px-5 py-3">
+                <div className="flex items-center gap-2">
+                  <BarChart3 className="h-3.5 w-3.5 text-slate-500" strokeWidth={2} />
+                  <span className="label-xs text-slate-500">Model VLT-Core 4.2</span>
+                </div>
+                <span className="font-mono text-[10px] text-slate-400">
+                  T+0.84s / 2,418 variables
+                </span>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      {/* CTA */}
+      <section className="border-b border-slate-200">
+        <div className="mx-auto flex max-w-7xl flex-col items-start justify-between gap-8 px-6 py-20 md:flex-row md:items-center">
+          <div>
+            <Label>Restricted Access</Label>
+            <h3 className="mt-4 max-w-2xl text-3xl font-black uppercase tracking-tighter text-slate-900 md:text-4xl">
+              Deploy Valtor against your active tender book.
+            </h3>
+          </div>
+          <Link
+            to="/auth"
+            className="label-xs flex items-center gap-3 border border-slate-900 bg-slate-900 px-6 py-4 text-white transition-colors hover:border-indigo-600 hover:bg-indigo-600"
+          >
+            Initiate System Audit
+            <ArrowRight className="h-3.5 w-3.5" strokeWidth={2.5} />
+          </Link>
+        </div>
+      </section>
+
+      {/* FOOTER */}
+      <footer className="bg-white">
+        <div className="mx-auto grid max-w-7xl grid-cols-1 gap-6 px-6 py-10 md:grid-cols-3">
+          <div className="flex items-center gap-3">
+            <div className="flex h-6 w-6 items-center justify-center bg-slate-900">
+              <div className="h-1.5 w-1.5 bg-white" />
+            </div>
+            <span className="label-xs text-slate-900">Valtor Systems</span>
+          </div>
+          <div className="font-mono text-[11px] text-slate-500 md:text-center">
+            Restricted Proprietary System — Unauthorized access prohibited.
+          </div>
+          <div className="font-mono text-[11px] text-slate-400 md:text-right">
+            BUILD v1.0.4 · SHA 0x4F2A · © 2026
+          </div>
+        </div>
+      </footer>
+    </div>
+  );
+}
+</file>
+
 <file path="src/routes/_authenticated/audit.tsx">
 import { downloadAuditExcel } from "@/utils/download";
 import { createFileRoute } from "@tanstack/react-router";
@@ -4485,7 +5140,8 @@ function AuditPage() {
     setLoadingStage("Initializing forensic engine...");
 
     try {
-      const apiKey = import.meta.env.VITE_GROQ_API_KEY;
+      const { data: { session } } = await supabase.auth.getSession();
+      if (!session) throw new Error("You must be signed in to run an audit.");
       const fileList = files.map(f => f.name).join(", ") || "No files uploaded (manual entry)";
 
       setLoadingStage("Running deep risk analysis...");
@@ -4563,32 +5219,19 @@ Submitted Documents: ${fileList}
 
 Apply Ethiopian construction market context. Flag FIDIC risks, validate BoQ rates against current Addis Ababa/Ethiopian market rates (2024-2025), and assess methodology for ERA specification compliance. Be specific and actionable.`;
 
-      const res = await fetch("https://api.groq.com/openai/v1/chat/completions", {
+      const res = await fetch("/api/check-analysis", {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          "Authorization": `Bearer ${apiKey}`
+          "Authorization": `Bearer ${session.access_token}`
         },
-        body: JSON.stringify({
-          model: "llama-3.3-70b-versatile",
-          temperature: 0.15,
-          max_tokens: 4000,
-          response_format: { type: "json_object" },
-          messages: [
-            { role: "system", content: systemPrompt },
-            { role: "user", content: userPrompt }
-          ]
-        })
+        body: JSON.stringify({ systemPrompt, userPrompt })
       });
 
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error?.message || `API Error ${res.status}`);
+      const analysis = await res.json();
+      if (!res.ok) throw new Error(analysis.error || `API Error ${res.status}`);
 
       setLoadingStage("Processing audit findings...");
-
-      let raw = data.choices?.[0]?.message?.content || "{}";
-      raw = raw.replace(/```json/g, "").replace(/```/g, "").trim();
-      const analysis = JSON.parse(raw);
 
       // Normalize risk score
       let score = Number(analysis.risk_score || 50);

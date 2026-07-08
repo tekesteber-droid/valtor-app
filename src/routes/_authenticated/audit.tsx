@@ -457,7 +457,8 @@ function AuditPage() {
     setLoadingStage("Initializing forensic engine...");
 
     try {
-      const apiKey = import.meta.env.VITE_GROQ_API_KEY;
+      const { data: { session } } = await supabase.auth.getSession();
+      if (!session) throw new Error("You must be signed in to run an audit.");
       const fileList = files.map(f => f.name).join(", ") || "No files uploaded (manual entry)";
 
       setLoadingStage("Running deep risk analysis...");
@@ -535,32 +536,19 @@ Submitted Documents: ${fileList}
 
 Apply Ethiopian construction market context. Flag FIDIC risks, validate BoQ rates against current Addis Ababa/Ethiopian market rates (2024-2025), and assess methodology for ERA specification compliance. Be specific and actionable.`;
 
-      const res = await fetch("https://api.groq.com/openai/v1/chat/completions", {
+      const res = await fetch("/api/check-analysis", {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          "Authorization": `Bearer ${apiKey}`
+          "Authorization": `Bearer ${session.access_token}`
         },
-        body: JSON.stringify({
-          model: "llama-3.3-70b-versatile",
-          temperature: 0.15,
-          max_tokens: 4000,
-          response_format: { type: "json_object" },
-          messages: [
-            { role: "system", content: systemPrompt },
-            { role: "user", content: userPrompt }
-          ]
-        })
+        body: JSON.stringify({ systemPrompt, userPrompt })
       });
 
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error?.message || `API Error ${res.status}`);
+      const analysis = await res.json();
+      if (!res.ok) throw new Error(analysis.error || `API Error ${res.status}`);
 
       setLoadingStage("Processing audit findings...");
-
-      let raw = data.choices?.[0]?.message?.content || "{}";
-      raw = raw.replace(/```json/g, "").replace(/```/g, "").trim();
-      const analysis = JSON.parse(raw);
 
       // Normalize risk score
       let score = Number(analysis.risk_score || 50);
