@@ -9,6 +9,7 @@ import {
   AlertTriangle, FileSearch, CheckCircle2,
   Shield, AlertOctagon, TrendingUp, ChevronRight, FileText,
 } from "lucide-react";
+import { motion, AnimatePresence, CountUp, StaggeredList, StaggerItem } from "@/components/motion";
 
 export const Route = createFileRoute("/_authenticated/dashboard")({
   head: () => ({ meta: [{ title: "Dashboard — BidSwift AI" }] }),
@@ -104,7 +105,7 @@ function BoqVarianceBars({ analysis }: { analysis: any }) {
       <div style={{ fontSize: 11, color: "#94A3B8", marginBottom: 10 }}>
         Your rates vs market avg. <span style={{ color: "#DC2626" }}>Red = &gt;15% above market</span>
       </div>
-      {data.map(d => {
+      {data.map((d: { item: string; variance: number }) => {
         const pct = Math.round(d.variance);
         const isWarn = Math.abs(pct) > 15;
         const color = pct > 15 ? "#DC2626" : pct > 0 ? "#D97706" : "#16A34A";
@@ -215,20 +216,22 @@ function Dashboard() {
         <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
 
           {/* KPIs */}
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+          <StaggeredList style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }} stagger={0.1}>
             {[
-              { label: "Portfolio Value", value: totalValue > 0 ? `${fmtEtb(totalValue)} ETB` : "—", sub: "across all audits", accent: undefined as string | undefined },
-              { label: "Projects", value: String(total || "—"), sub: "in workspace", accent: undefined as string | undefined },
-              { label: "Avg Risk Score", value: avgRisk !== null ? String(avgRisk) : "—", sub: avgRisk !== null ? riskLabel(avgRisk) : "no scored projects", accent: avgRisk !== null ? riskColor(avgRisk) : undefined },
-              { label: "AI: Proceed", value: String(proceed || "—"), sub: "recommended bids", accent: proceed > 0 ? "#16A34A" : undefined as string | undefined },
+              { label: "Portfolio Value", node: totalValue > 0 ? <CountUp value={totalValue} format={(v) => `${fmtEtb(v)} ETB`} /> : "—", sub: "across all audits", accent: undefined as string | undefined },
+              { label: "Projects", node: total ? <CountUp value={total} /> : "—", sub: "in workspace", accent: undefined as string | undefined },
+              { label: "Avg Risk Score", node: avgRisk !== null ? <CountUp value={avgRisk} /> : "—", sub: avgRisk !== null ? riskLabel(avgRisk) : "no scored projects", accent: avgRisk !== null ? riskColor(avgRisk) : undefined },
+              { label: "Go Decisions", node: proceed ? <CountUp value={proceed} /> : "—", sub: "recommended bids", accent: proceed > 0 ? "#16A34A" : undefined as string | undefined },
             ].map(k => (
-              <div key={k.label} style={{ ...card, padding: "14px 16px" }}>
-                <div style={{ fontSize: 10, textTransform: "uppercase" as const, letterSpacing: "0.8px", color: "#94A3B8", marginBottom: 6 }}>{k.label}</div>
-                <div style={{ ...mono, fontSize: 22, fontWeight: 700, color: k.accent ?? "#0F172A", lineHeight: 1 }}>{k.value}</div>
-                <div style={{ fontSize: 10, color: "#94A3B8", marginTop: 4 }}>{k.sub}</div>
-              </div>
+              <StaggerItem key={k.label}>
+                <div style={{ ...card, padding: "14px 16px" }}>
+                  <div style={{ fontSize: 10, textTransform: "uppercase" as const, letterSpacing: "0.8px", color: "#94A3B8", marginBottom: 6 }}>{k.label}</div>
+                  <div style={{ ...mono, fontSize: 22, fontWeight: 700, color: k.accent ?? "#0F172A", lineHeight: 1 }}>{k.node}</div>
+                  <div style={{ fontSize: 10, color: "#94A3B8", marginTop: 4 }}>{k.sub}</div>
+                </div>
+              </StaggerItem>
             ))}
-          </div>
+          </StaggeredList>
 
           {/* Scatter */}
           <div style={card}>
@@ -280,42 +283,46 @@ function Dashboard() {
             <div style={{ maxHeight: 280, overflowY: "auto" }}>
               {loading ? (
                 <div style={{ padding: "28px", textAlign: "center", color: "#94A3B8", fontSize: 12 }}>Loading pipeline…</div>
-              ) : audits.length === 0 ? (
-                <div style={{ padding: "40px 24px", textAlign: "center", color: "#94A3B8", fontSize: 12 }}>
-                  No audits yet. <Link to="/audit" style={{ color: "#3B82F6", textDecoration: "none", fontWeight: 600 }}>Run your first bid audit →</Link>
-                </div>
-              ) : audits.map(a => {
-                const isSelected = selectedAudit?.id === a.id;
-                const rec = a.analysis?.recommendation;
-                const recColor = rec === "PROCEED" ? "#16A34A" : rec === "DECLINE" ? "#DC2626" : "#D97706";
-                const recBg = rec === "PROCEED" ? "#F0FDF4" : rec === "DECLINE" ? "#FEF2F2" : "#FFFBEB";
-                const score = a.risk_score != null ? Math.round(Number(a.risk_score)) : null;
-                return (
-                  <div key={a.id}
-                    onClick={() => setSelectedAudit(isSelected ? null : a)}
-                    style={{ display: "grid", gridTemplateColumns: "1fr 130px 80px 90px", alignItems: "center", padding: "11px 18px", borderBottom: "1px solid #F8FAFC", cursor: "pointer", background: isSelected ? "#EFF6FF" : "transparent", transition: "background 0.1s" }}
-                    onMouseEnter={e => { if (!isSelected) (e.currentTarget as HTMLElement).style.background = "#F8FAFC"; }}
-                    onMouseLeave={e => { if (!isSelected) (e.currentTarget as HTMLElement).style.background = "transparent"; }}
-                  >
-                    <div style={{ fontSize: 13, fontWeight: 500 }}>{a.project_name}</div>
-                    <div style={{ ...mono, fontSize: 12, color: "#64748B", textAlign: "right" }}>{fmtEtb(Number(a.contract_value ?? 0))}</div>
-                    <div style={{ display: "flex", justifyContent: "center" }}>
-                      {score !== null ? (
-                        <div style={{ ...mono, fontSize: 12, fontWeight: 700, padding: "2px 10px", borderRadius: 20, background: `${riskColor(score)}15`, color: riskColor(score), border: `1px solid ${riskColor(score)}30` }}>
-                          {score}
+              ) : (
+                <AnimatePresence initial={false}>
+                  {audits.map(a => {
+                    const isSelected = selectedAudit?.id === a.id;
+                    const rec = a.analysis?.recommendation;
+                    const recColor = rec === "PROCEED" ? "#16A34A" : rec === "DECLINE" ? "#DC2626" : "#D97706";
+                    const recBg = rec === "PROCEED" ? "#F0FDF4" : rec === "DECLINE" ? "#FEF2F2" : "#FFFBEB";
+                    const score = a.risk_score != null ? Math.round(Number(a.risk_score)) : null;
+                    return (
+                      <motion.div key={a.id}
+                        layout
+                        initial={{ opacity: 0, y: 6 }}
+                        animate={{ opacity: 1, y: 0 }}
+                        transition={{ duration: 0.25 }}
+                        onClick={() => setSelectedAudit(isSelected ? null : a)}
+                        style={{ display: "grid", gridTemplateColumns: "1fr 130px 80px 90px", alignItems: "center", padding: "11px 18px", borderBottom: "1px solid #F8FAFC", cursor: "pointer", background: isSelected ? "#EFF6FF" : "transparent", transition: "background 0.1s" }}
+                        onMouseEnter={e => { if (!isSelected) (e.currentTarget as HTMLElement).style.background = "#F8FAFC"; }}
+                        onMouseLeave={e => { if (!isSelected) (e.currentTarget as HTMLElement).style.background = "transparent"; }}
+                      >
+                        <div style={{ fontSize: 13, fontWeight: 500 }}>{a.project_name}</div>
+                        <div style={{ ...mono, fontSize: 12, color: "#64748B", textAlign: "right" }}>{fmtEtb(Number(a.contract_value ?? 0))}</div>
+                        <div style={{ display: "flex", justifyContent: "center" }}>
+                          {score !== null ? (
+                            <div style={{ ...mono, fontSize: 12, fontWeight: 700, padding: "2px 10px", borderRadius: 20, background: `${riskColor(score)}15`, color: riskColor(score), border: `1px solid ${riskColor(score)}30` }}>
+                              {score}
+                            </div>
+                          ) : <span style={{ color: "#94A3B8" }}>—</span>}
                         </div>
-                      ) : <span style={{ color: "#94A3B8" }}>—</span>}
-                    </div>
-                    <div style={{ display: "flex", justifyContent: "center" }}>
-                      {rec ? (
-                        <div style={{ fontSize: 10, fontWeight: 700, padding: "2px 10px", borderRadius: 20, background: recBg, color: recColor, border: `1px solid ${recColor}30` }}>
-                          {rec}
+                        <div style={{ display: "flex", justifyContent: "center" }}>
+                          {rec ? (
+                            <div style={{ fontSize: 10, fontWeight: 700, padding: "2px 10px", borderRadius: 20, background: recBg, color: recColor, border: `1px solid ${recColor}30` }}>
+                              {rec}
+                            </div>
+                          ) : <span style={{ color: "#94A3B8" }}>—</span>}
                         </div>
-                      ) : <span style={{ color: "#94A3B8" }}>—</span>}
-                    </div>
-                  </div>
-                );
-              })}
+                      </motion.div>
+                    );
+                  })}
+                </AnimatePresence>
+              )}
             </div>
           </div>
 
