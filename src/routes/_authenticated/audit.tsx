@@ -731,7 +731,7 @@ Apply Ethiopian construction market context. Flag FIDIC risks, validate BoQ rate
 
           {/* Sidebar */}
           <div className="lg:col-span-5 bg-slate-900 rounded-lg p-8 text-white space-y-5">
-            <img src={logo} alt="Valtor" style={{ height: "28px", filter: "brightness(0) invert(1)" }} />
+            <img src={logo} alt="BidSwift AI" style={{ height: "28px", filter: "brightness(0) invert(1)" }} />
             <p className="text-[11px] text-slate-400 leading-relaxed">
               Deep forensic analysis powered by VLT-Core v3. Covers FIDIC compliance, BoQ arithmetic, market calibration, and regulatory risk.
             </p>

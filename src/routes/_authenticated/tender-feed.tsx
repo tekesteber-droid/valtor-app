@@ -9,7 +9,7 @@ import {
 } from "lucide-react";
 
 export const Route = createFileRoute("/_authenticated/tender-feed")({
-  head: () => ({ meta: [{ title: "Tender Feed — Valtor" }] }),
+  head: () => ({ meta: [{ title: "Tender Feed — BidSwift AI" }] }),
   component: TenderFeed,
 });
 

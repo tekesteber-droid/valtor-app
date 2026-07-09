@@ -11,7 +11,7 @@ import {
 } from "lucide-react";
 
 export const Route = createFileRoute("/_authenticated/dashboard")({
-  head: () => ({ meta: [{ title: "Dashboard — Valtor" }] }),
+  head: () => ({ meta: [{ title: "Dashboard — BidSwift AI" }] }),
   component: Dashboard,
 });
 
@@ -184,7 +184,7 @@ function Dashboard() {
       {/* Top bar */}
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "0 24px", height: 52, background: "#fff", borderBottom: "1px solid #E2E8F0" }}>
         <div style={{ display: "flex", alignItems: "center", gap: 20 }}>
-          <div style={{ ...mono, fontSize: 15, fontWeight: 800, letterSpacing: 2 }}>VALTOR</div>
+          <div style={{ ...mono, fontSize: 15, fontWeight: 800, letterSpacing: 2 }}>BIDSWIFT AI</div>
           <div style={{ width: 1, height: 20, background: "#E2E8F0" }} />
           <div style={{ fontSize: 12, color: "#64748B" }}>{total} {total === 1 ? "project" : "projects"} audited</div>
           {totalValue > 0 && (

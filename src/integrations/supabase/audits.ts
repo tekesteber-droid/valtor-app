@@ -86,5 +86,5 @@ export function useAudits() {
 }
 
 export function dispatchAuditsUpdated() {
-  window.dispatchEvent(new Event("valtor:audits-updated"));
+  window.dispatchEvent(new Event("bidswift:audits-updated"));
 }

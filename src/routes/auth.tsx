@@ -44,7 +44,7 @@ function AuthPage() {
         <div className="w-full space-y-16">
           <img 
             src={logo} 
-            alt="Valtor" 
+            alt="BidSwift AI" 
             style={{ 
               width: "100%", 
               maxWidth: "400px", // MASSIVE SCALE

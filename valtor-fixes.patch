@@ -1,0 +1,388 @@
+diff -ru original/.env.example repo/.env.example
+--- original/.env.example	2026-07-01 10:24:24.788683873 +0000
++++ repo/.env.example	2026-07-01 10:01:39.239497657 +0000
+@@ -1,5 +1,15 @@
+ VITE_SUPABASE_URL=https://your-project-ref.supabase.co
+ VITE_SUPABASE_ANON_KEY=your-supabase-anon-or-publishable-key
+ 
+-# Used by the audit page when calling Gemini.
+-VITE_GEMINI_API_KEY=your-gemini-api-key
+\ No newline at end of file
++# --- Server-side only (Vercel project env vars) ---
++# These are used by api/check-analysis.js and must NEVER be prefixed with
++# VITE_ — a VITE_ prefix causes Vite to inline the value into the client
++# bundle, which would expose it to every visitor.
++#
++# Groq API key, used server-side to run the forensic audit LLM call.
++GROQ_API_KEY=your-groq-api-key
++#
++# Supabase service role key, used server-side to verify a caller's session
++# token before running an audit. Find this in Supabase > Project Settings >
++# API > service_role key. Keep this secret — it bypasses RLS.
++SUPABASE_SERVICE_ROLE_KEY=your-supabase-service-role-key
+\ No newline at end of file
+diff -ru original/api/check-analysis.js repo/api/check-analysis.js
+--- original/api/check-analysis.js	2026-07-01 10:24:24.788481037 +0000
++++ repo/api/check-analysis.js	2026-07-01 10:00:50.876662884 +0000
+@@ -1,21 +1,38 @@
+ // api/check-analysis.js
+ import Groq from "groq-sdk";
++import { createClient } from "@supabase/supabase-js";
+ 
+ const groq = new Groq({ apiKey: process.env.GROQ_API_KEY });
+ 
++// Server-side Supabase client using the service role key. This never touches
++// the browser bundle — it only exists in this serverless function's env.
++const supabaseAdmin = createClient(
++  process.env.VITE_SUPABASE_URL,
++  process.env.SUPABASE_SERVICE_ROLE_KEY
++);
++
+ export default async function handler(req, res) {
+   // Only allow POST
+   if (req.method !== "POST") {
+     return res.status(405).json({ error: "Method not allowed. Use POST." });
+   }
+ 
+-  // Basic auth check — the caller must be a logged-in Supabase user.
+-  // We verify by checking the Authorization header contains a Bearer token.
+-  // (Full JWT verification via Supabase Admin SDK can be added later.)
++  // Require a Supabase-issued access token and verify it against Supabase Auth.
++  // This confirms the caller is an actual logged-in user, not just any string
++  // that happens to start with "Bearer ".
+   const authHeader = req.headers["authorization"] || "";
+   if (!authHeader.startsWith("Bearer ")) {
+     return res.status(401).json({ error: "Missing authorization token." });
+   }
++  const token = authHeader.slice("Bearer ".length).trim();
++  if (!token) {
++    return res.status(401).json({ error: "Missing authorization token." });
++  }
++
++  const { data: userData, error: userError } = await supabaseAdmin.auth.getUser(token);
++  if (userError || !userData?.user) {
++    return res.status(401).json({ error: "Invalid or expired session. Please sign in again." });
++  }
+ 
+   try {
+     const { systemPrompt, userPrompt } = req.body;
+@@ -43,4 +60,4 @@
+     console.error("Groq API Failure:", error);
+     return res.status(500).json({ error: "Failed to process audit analysis.", detail: error.message });
+   }
+-}
+\ No newline at end of file
++}
+diff -ru original/src/routes/_authenticated/audit.tsx repo/src/routes/_authenticated/audit.tsx
+--- original/src/routes/_authenticated/audit.tsx	2026-07-01 10:24:24.790027916 +0000
++++ repo/src/routes/_authenticated/audit.tsx	2026-07-01 10:22:45.005530008 +0000
+@@ -3,6 +3,7 @@
+ import { useState, useRef } from "react";
+ import { supabase } from "@/integrations/supabase/client";
+ import { insertAudit, dispatchAuditsUpdated } from "@/integrations/supabase/audits";
++import { RecBadge } from "@/components/RiskUtils";
+ import {
+   UploadCloud, Loader2, FileText, X, CheckCircle2,
+   XCircle, AlertTriangle, RotateCcw, ShieldAlert,
+@@ -85,14 +86,6 @@
+   return "bg-slate-100 text-slate-700 border-slate-200";
+ }
+ 
+-function RecBadge({ rec }: { rec?: string }) {
+-  const s = rec || "PROCEED_WITH_CAUTION";
+-  const label = s.replace(/_/g, " ");
+-  if (s === "PROCEED") return <span className="badge badge-green flex items-center gap-1"><CheckCircle2 size={11} /> {label}</span>;
+-  if (s === "DECLINE") return <span className="badge badge-red flex items-center gap-1"><XCircle size={11} /> {label}</span>;
+-  return <span className="badge badge-amber flex items-center gap-1"><AlertTriangle size={11} /> {label}</span>;
+-}
+-
+ function VarianceIcon({ pct }: { pct: number }) {
+   if (pct > 5) return <TrendingUp size={13} className="text-red-500" />;
+   if (pct < -5) return <TrendingDown size={13} className="text-emerald-500" />;
+@@ -457,7 +450,6 @@
+     setLoadingStage("Initializing forensic engine...");
+ 
+     try {
+-      const apiKey = import.meta.env.VITE_GROQ_API_KEY;
+       const fileList = files.map(f => f.name).join(", ") || "No files uploaded (manual entry)";
+ 
+       setLoadingStage("Running deep risk analysis...");
+@@ -535,33 +527,26 @@
+ 
+ Apply Ethiopian construction market context. Flag FIDIC risks, validate BoQ rates against current Addis Ababa/Ethiopian market rates (2024-2025), and assess methodology for ERA specification compliance. Be specific and actionable.`;
+ 
+-      const res = await fetch("https://api.groq.com/openai/v1/chat/completions", {
++      // Route through our own serverless proxy (api/check-analysis.js) so the
++      // Groq API key stays server-side. The proxy verifies this token against
++      // Supabase before calling Groq.
++      const { data: { session } } = await supabase.auth.getSession();
++      if (!session) throw new Error("You must be signed in to run an audit.");
++
++      const res = await fetch("/api/check-analysis", {
+         method: "POST",
+         headers: {
+           "Content-Type": "application/json",
+-          "Authorization": `Bearer ${apiKey}`
++          "Authorization": `Bearer ${session.access_token}`
+         },
+-        body: JSON.stringify({
+-          model: "llama-3.3-70b-versatile",
+-          temperature: 0.15,
+-          max_tokens: 4000,
+-          response_format: { type: "json_object" },
+-          messages: [
+-            { role: "system", content: systemPrompt },
+-            { role: "user", content: userPrompt }
+-          ]
+-        })
++        body: JSON.stringify({ systemPrompt, userPrompt })
+       });
+ 
+-      const data = await res.json();
+-      if (!res.ok) throw new Error(data.error?.message || `API Error ${res.status}`);
++      const analysis = await res.json();
++      if (!res.ok) throw new Error(analysis.error || `API Error ${res.status}`);
+ 
+       setLoadingStage("Processing audit findings...");
+ 
+-      let raw = data.choices?.[0]?.message?.content || "{}";
+-      raw = raw.replace(/```json/g, "").replace(/```/g, "").trim();
+-      const analysis = JSON.parse(raw);
+-
+       // Normalize risk score
+       let score = Number(analysis.risk_score || 50);
+       if (score > 0 && score < 1) score = score * 100;
+@@ -588,6 +573,7 @@
+           target_margin: Number(targetMargin),
+           risk_score: finalScore,
+           status: "completed",
++          workflow_status: "Draft",
+           analysis
+         });
+         dispatchAuditsUpdated();
+diff -ru original/src/routes/_authenticated/dashboard.tsx repo/src/routes/_authenticated/dashboard.tsx
+--- original/src/routes/_authenticated/dashboard.tsx	2026-07-01 10:24:24.789817353 +0000
++++ repo/src/routes/_authenticated/dashboard.tsx	2026-07-01 10:04:00.697294153 +0000
+@@ -9,6 +9,7 @@
+   AlertTriangle, FileSearch, CheckCircle2,
+   Shield, AlertOctagon, TrendingUp, ChevronRight, FileText,
+ } from "lucide-react";
++import { riskColor, riskLabel } from "@/components/RiskUtils";
+ 
+ export const Route = createFileRoute("/_authenticated/dashboard")({
+   head: () => ({ meta: [{ title: "Dashboard — Valtor" }] }),
+@@ -23,20 +24,6 @@
+   return Math.round(n).toLocaleString();
+ }
+ 
+-function riskColor(score: number | null) {
+-  if (score === null) return "#94A3B8";
+-  if (score < 40) return "#16A34A";
+-  if (score < 65) return "#D97706";
+-  return "#DC2626";
+-}
+-
+-function riskLabel(score: number | null) {
+-  if (score === null) return "—";
+-  if (score < 40) return "LOW";
+-  if (score < 65) return "MEDIUM";
+-  return "HIGH";
+-}
+-
+ // ─── Contract Flags ───────────────────────────────────────────────────────────
+ 
+ function ContractFlags({ analysis }: { analysis: any }) {
+diff -ru original/src/routes/_authenticated/history.tsx repo/src/routes/_authenticated/history.tsx
+--- original/src/routes/_authenticated/history.tsx	2026-07-01 10:24:24.789308187 +0000
++++ repo/src/routes/_authenticated/history.tsx	2026-07-01 10:22:13.787669607 +0000
+@@ -1,6 +1,8 @@
+ import { createFileRoute } from "@tanstack/react-router";
+ import { useEffect, useRef, useState } from "react";
+-import { deleteAudit, updateAuditWorkflowStatus, useAudits } from "@/integrations/supabase/audits";
++import { deleteAudit, updateAuditWorkflowStatus, useAudits, type AuditRow } from "@/integrations/supabase/audits";
++import type { WorkflowStatus } from "@/types/audit";
++import { riskClass } from "@/components/RiskUtils";
+ import {
+   Trash2,
+   FileText,
+@@ -15,20 +17,6 @@
+   component: HistoryPage,
+ });
+ 
+-type WorkflowStatus = "Draft" | "In Review" | "Approved" | "Rejected";
+-
+-type AuditRow = {
+-  id: string;
+-  project_name: string;
+-  file_name: string | null;
+-  contract_value: number;
+-  target_margin: number;
+-  risk_score: number | null;
+-  status: string;
+-  analysis: any;
+-  created_at: string;
+-};
+-
+ function workflowBadge(s: WorkflowStatus) {
+   if (s === "Draft") return <span className="badge badge-slate">Draft</span>;
+   if (s === "In Review") return <span className="badge badge-blue">In Review</span>;
+@@ -43,15 +31,8 @@
+   return <span className="badge badge-amber">Caution</span>;
+ }
+ 
+-function riskClass(score: number | null) {
+-  if (score === null) return "";
+-  if (score < 35) return "risk-low";
+-  if (score < 65) return "risk-medium";
+-  return "risk-high";
+-}
+-
+ // Minimal custom dropdown for the actions menu (no Radix dep needed)
+-function ActionsMenu({ onAction }: { onAction: (action: string) => void }) {
++function ActionsMenu({ onAction, disabled }: { onAction: (action: string) => void; disabled?: boolean }) {
+   const [open, setOpen] = useState(false);
+   const ref = useRef<HTMLDivElement>(null);
+ 
+@@ -75,7 +56,8 @@
+       <button
+         className="btn-ghost"
+         onClick={() => setOpen((v) => !v)}
+-        style={{ padding: "0.3rem 0.5rem", gap: "0.2rem" }}
++        disabled={disabled}
++        style={{ padding: "0.3rem 0.5rem", gap: "0.2rem", opacity: disabled ? 0.5 : 1 }}
+       >
+         Actions <ChevronDown size={11} />
+       </button>
+@@ -124,15 +106,7 @@
+ function HistoryPage() {
+   const { audits, loading, reload } = useAudits();
+   const [selected, setSelected] = useState<AuditRow | null>(null);
+-  const [workflow, setWorkflow] = useState<Record<string, WorkflowStatus>>({});
+-
+-  useEffect(() => {
+-    setWorkflow((prev) => {
+-      const next = { ...prev };
+-      audits.forEach((r) => { if (!next[r.id]) next[r.id] = "Draft"; });
+-      return next;
+-    });
+-  }, [audits]);
++  const [pendingIds, setPendingIds] = useState<Set<string>>(new Set());
+ 
+   const remove = async (id: string) => {
+     await deleteAudit(id);
+@@ -140,8 +114,21 @@
+     reload();
+   };
+ 
+-  const setStatus = (id: string, status: string) => {
+-    setWorkflow((prev) => ({ ...prev, [id]: status as WorkflowStatus }));
++  const setStatus = async (id: string, status: WorkflowStatus) => {
++    setPendingIds((prev) => new Set(prev).add(id));
++    try {
++      await updateAuditWorkflowStatus(id, status);
++      await reload();
++      setSelected((prev) => (prev && prev.id === id ? { ...prev, workflow_status: status } : prev));
++    } catch (err) {
++      console.error("Failed to update workflow status:", err);
++    } finally {
++      setPendingIds((prev) => {
++        const next = new Set(prev);
++        next.delete(id);
++        return next;
++      });
++    }
+   };
+ 
+   return (
+@@ -201,14 +188,14 @@
+                     </td>
+                     <td>{recBadge(r.analysis?.recommendation)}</td>
+                     <td onClick={(e) => e.stopPropagation()}>
+-                      {workflowBadge(workflow[r.id] ?? "Draft")}
++                      {workflowBadge(r.workflow_status ?? "Draft")}
+                     </td>
+                     <td className="text-right muted" style={{ whiteSpace: "nowrap" }}>
+                       {new Date(r.created_at).toLocaleDateString("en-GB", { day: "2-digit", month: "short", year: "numeric" })}
+                     </td>
+                     <td onClick={(e) => e.stopPropagation()}>
+                       <div style={{ display: "flex", alignItems: "center", gap: "0.375rem", justifyContent: "flex-end" }}>
+-                        <ActionsMenu onAction={(v) => setStatus(r.id, v)} />
++                        <ActionsMenu onAction={(v) => setStatus(r.id, v as WorkflowStatus)} disabled={pendingIds.has(r.id)} />
+                         <button
+                           onClick={() => remove(r.id)}
+                           className="btn-ghost"
+@@ -281,7 +268,7 @@
+ 
+             <div style={{ marginBottom: "0.75rem" }}>
+               <div className="section-label">Approval Status</div>
+-              {workflowBadge(workflow[selected.id] ?? "Draft")}
++              {workflowBadge(selected.workflow_status ?? "Draft")}
+             </div>
+ 
+             <details>
+diff -ru original/src/types/audit.ts repo/src/types/audit.ts
+--- original/src/types/audit.ts	2026-07-01 10:24:24.788623164 +0000
++++ repo/src/types/audit.ts	2026-07-01 10:02:02.884663244 +0000
+@@ -0,0 +1,61 @@
++// src/types/audit.ts
++//
++// Shared types for the shape of an audit's stored `analysis` JSON blob.
++// This mirrors the JSON structure the forensic-audit LLM prompt (see
++// src/routes/_authenticated/audit.tsx) is instructed to return, and that
++// gets persisted as-is into the `audits.analysis` jsonb column.
++
++export type Severity = "CRITICAL" | "HIGH" | "MEDIUM" | "LOW";
++
++export type ContractualTrap = {
++  clause_type: string;
++  fidic_ref: string;
++  severity: Severity;
++  description: string;
++  recommendation: string;
++};
++
++export type MarketVarianceItem = {
++  item: string;
++  category: string;
++  our_rate: number;
++  market_rate: number;
++  variance_pct: number;
++  unit: string;
++  note: string;
++};
++
++export type ArithmeticError = {
++  location: string;
++  description: string;
++  severity: Exclude<Severity, "CRITICAL">;
++  financial_impact: number;
++};
++
++export type ScopeGap = {
++  missing_element: string;
++  risk_impact: string;
++  estimated_cost_etb: number;
++};
++
++export type Recommendation = "PROCEED" | "PROCEED_WITH_CAUTION" | "DECLINE";
++
++export type AuditAnalysis = {
++  risk_score: number;
++  recommendation: Recommendation;
++  executive_summary: string;
++  technical_critique: string;
++  methodology_strengths: string[];
++  methodology_weaknesses: string[];
++  arithmetic_errors: ArithmeticError[];
++  contractual_traps: ContractualTrap[];
++  market_variance: MarketVarianceItem[];
++  scope_gaps: ScopeGap[];
++  resource_gap_analysis: string;
++  plant_adequacy_assessment: string;
++  regulatory_compliance: string;
++  financial_risk_summary: string;
++  key_risks: string[];
++};
++
++export type WorkflowStatus = "Draft" | "In Review" | "Approved" | "Rejected";
+Only in repo/supabase/migrations: 002_workflow_status.sql

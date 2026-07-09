@@ -1,4 +1,4 @@
--- Valtor Supabase schema
+-- BidSwift AI Supabase schema
 -- Run this in the Supabase SQL editor or through the Supabase CLI.
 
 create extension if not exists pgcrypto;

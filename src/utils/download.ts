@@ -8,7 +8,7 @@ export const downloadAuditExcel = (result: any) => {
 
     // --- SHEET 1: EVALUATION MATRIX ---
     const evaluationData = [
-      ["VALTOR FORENSIC AUDIT REPORT", ""],
+      ["BIDSWIFT AI FORENSIC AUDIT REPORT", ""],
       ["Project Name", result.project_name || "N/A"],
       ["Audit Date", new Date().toLocaleString()],
       ["", ""],
@@ -58,7 +58,7 @@ export const downloadAuditExcel = (result: any) => {
     XLSX.utils.book_append_sheet(wb, ws2, "Risk Register");
     XLSX.utils.book_append_sheet(wb, ws3, "BoQ Analysis");
 
-    XLSX.writeFile(wb, `Valtor_Audit_${safeProjectName}_${timestamp}.xlsx`);
+    XLSX.writeFile(wb, `BidSwiftAI_Audit_${safeProjectName}_${timestamp}.xlsx`);
   } catch (err) {
     console.error("Excel Export Failed:", err);
     alert("Excel Export failed due to missing data structures.");

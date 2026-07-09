@@ -40,7 +40,7 @@ export function AppShell({ children, userEmail }: { children: ReactNode; userEma
           <Link to="/" style={{ display: "block", textDecoration: "none" }}>
             <img 
               src={logo} 
-              alt="Valtor" 
+              alt="BidSwift AI" 
               style={{ 
                 width: "100%", 
                 height: "auto", 

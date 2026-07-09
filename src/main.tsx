@@ -7,7 +7,7 @@ import "./styles.css";
 const rootElement = document.getElementById("root");
 
 if (!rootElement) {
-  throw new Error("Valtor could not start because #root was not found.");
+  throw new Error("BidSwift AI could not start because #root was not found.");
 }
 
 const router = createRouter({

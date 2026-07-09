@@ -11,7 +11,7 @@ import {
 } from "lucide-react";
 
 export const Route = createFileRoute("/_authenticated/history")({
-  head: () => ({ meta: [{ title: "Audit History — Valtor" }] }),
+  head: () => ({ meta: [{ title: "Audit History — BidSwift AI" }] }),
   component: HistoryPage,
 });
 
