@@ -84,194 +84,6 @@ vite.config.ts
 <files>
 This section contains the contents of the repository's files.
 
-<file path="src/components/motion.tsx">
-// src/components/motion.tsx — shared animation primitives for BidSwift AI.
-// Rules: motion never gates data; every component has a reduced-motion static fallback.
-import { motion, AnimatePresence, useReducedMotion } from "framer-motion";
-import { useEffect, useState, type ReactNode, type CSSProperties } from "react";
-import { CheckCircle2 } from "lucide-react";
-
-// ─── Count-up ─────────────────────────────────────────────────────────────────
-
-export function useCountUp(target: number, duration = 700) {
-  const reduced = useReducedMotion();
-  const [value, setValue] = useState(reduced ? target : 0);
-  useEffect(() => {
-    if (reduced) { setValue(target); return; }
-    let raf = 0;
-    const start = performance.now();
-    const tick = (now: number) => {
-      const p = Math.min((now - start) / duration, 1);
-      setValue(target * (1 - Math.pow(1 - p, 3))); // easeOutCubic
-      if (p < 1) raf = requestAnimationFrame(tick);
-    };
-    raf = requestAnimationFrame(tick);
-    return () => cancelAnimationFrame(raf);
-  }, [target, duration, reduced]);
-  return value;
-}
-
-export function CountUp({ value, format }: { value: number; format?: (v: number) => string }) {
-  const v = useCountUp(value);
-  return <>{format ? format(v) : Math.round(v).toLocaleString()}</>;
-}
-
-// ─── Score reveal (scale-in + count-up) ───────────────────────────────────────
-
-export function AnimatedScore({ value, suffix, color, fontSize = "1.75rem" }: {
-  value: number; suffix?: ReactNode; color: string; fontSize?: string;
-}) {
-  const reduced = useReducedMotion();
-  const shown = Math.round(useCountUp(value));
-  const inner = (
-    <span style={{ fontSize, fontWeight: 800, color, letterSpacing: "-0.02em", lineHeight: 1, fontFamily: "'JetBrains Mono','Fira Code',monospace", display: "inline-block" }}>
-      {shown}{suffix}
-    </span>
-  );
-  if (reduced) return inner;
-  return (
-    <motion.span
-      initial={{ scale: 0.65, opacity: 0 }}
-      animate={{ scale: 1, opacity: 1 }}
-      transition={{ type: "spring", stiffness: 300, damping: 20 }}
-      style={{ display: "inline-block" }}
-    >
-      {inner}
-    </motion.span>
-  );
-}
-
-// ─── Staggered reveal ─────────────────────────────────────────────────────────
-
-export function StaggeredList({ children, className, style, delay = 0, stagger = 0.12 }: {
-  children: ReactNode; className?: string; style?: CSSProperties; delay?: number; stagger?: number;
-}) {
-  const reduced = useReducedMotion();
-  if (reduced) return <div className={className} style={style}>{children}</div>;
-  return (
-    <motion.div
-      className={className} style={style}
-      initial="hidden" animate="show"
-      variants={{ hidden: {}, show: { transition: { staggerChildren: stagger, delayChildren: delay } } }}
-    >
-      {children}
-    </motion.div>
-  );
-}
-
-export function StaggerItem({ children, className, style, sharp = false }: {
-  children: ReactNode; className?: string; style?: CSSProperties;
-  /** sharp = urgent entrance (critical findings); soft = default */
-  sharp?: boolean;
-}) {
-  const reduced = useReducedMotion();
-  if (reduced) return <div className={className} style={style}>{children}</div>;
-  return (
-    <motion.div
-      className={className} style={style}
-      variants={{
-        hidden: sharp ? { opacity: 0, x: -14 } : { opacity: 0, y: 10 },
-        show: sharp
-          ? { opacity: 1, x: 0, transition: { type: "spring", stiffness: 520, damping: 26 } }
-          : { opacity: 1, y: 0, transition: { duration: 0.32, ease: "easeOut" } },
-      }}
-    >
-      {children}
-    </motion.div>
-  );
-}
-
-// ─── Collapsible (animated height, never hides data behind motion) ───────────
-
-export function Collapsible({ open, children }: { open: boolean; children: ReactNode }) {
-  const reduced = useReducedMotion();
-  if (reduced) return open ? <div>{children}</div> : null;
-  return (
-    <AnimatePresence initial={false}>
-      {open && (
-        <motion.div
-          initial={{ height: 0, opacity: 0 }}
-          animate={{ height: "auto", opacity: 1 }}
-          exit={{ height: 0, opacity: 0 }}
-          transition={{ duration: 0.25, ease: "easeOut" }}
-          style={{ overflow: "hidden" }}
-        >
-          {children}
-        </motion.div>
-      )}
-    </AnimatePresence>
-  );
-}
-
-// ─── Staged processing indicator (no blob spinners) ──────────────────────────
-
-export function ProcessingStages({ stages, hint }: { stages: string[]; hint?: string }) {
-  const reduced = useReducedMotion();
-  const [active, setActive] = useState(0);
-
-  // Advance stages on a heartbeat; the final stage holds until real data unmounts us.
-  useEffect(() => {
-    if (reduced) return;
-    const id = setInterval(() => setActive((a) => Math.min(a + 1, stages.length - 1)), 1800);
-    return () => clearInterval(id);
-  }, [stages.length, reduced]);
-
-  return (
-    <div style={{ maxWidth: 360, margin: "0 auto", textAlign: "left", display: "flex", flexDirection: "column", gap: "0.75rem" }}>
-      {stages.map((s, i) => {
-        const done = i < active;
-        const current = i === active;
-        return (
-          <div key={s} style={{ display: "flex", alignItems: "center", gap: "0.625rem", fontSize: "0.8125rem", color: done ? "#15803D" : current ? "#0F2240" : "#9CA3AF", fontWeight: current ? 700 : 500 }}>
-            {done ? (
-              reduced ? <CheckCircle2 size={15} /> : (
-                <motion.span initial={{ scale: 0 }} animate={{ scale: 1 }} transition={{ type: "spring", stiffness: 400, damping: 18 }} style={{ display: "flex" }}>
-                  <CheckCircle2 size={15} />
-                </motion.span>
-              )
-            ) : current ? (
-              reduced ? <span style={{ width: 15, textAlign: "center" }}>•</span> : (
-                <motion.span
-                  animate={{ scale: [1, 1.4, 1], opacity: [1, 0.55, 1] }}
-                  transition={{ duration: 1.1, repeat: Infinity, ease: "easeInOut" }}
-                  style={{ width: 9, height: 9, margin: 3, borderRadius: "50%", background: "#1D4ED8", display: "inline-block" }}
-                />
-              )
-            ) : (
-              <span style={{ width: 9, height: 9, margin: 3, borderRadius: "50%", background: "#E4E7EC", display: "inline-block" }} />
-            )}
-            {s}
-          </div>
-        );
-      })}
-      {hint && <p style={{ fontSize: "0.6875rem", color: "#9CA3AF", marginTop: "0.5rem" }}>{hint}</p>}
-    </div>
-  );
-}
-
-// ─── Clean-audit payoff ───────────────────────────────────────────────────────
-
-export function CleanAuditBeat() {
-  const reduced = useReducedMotion();
-  const body = (
-    <div style={{ display: "flex", alignItems: "center", gap: "0.75rem", background: "#F0FDF4", border: "1px solid #BBF7D0", borderRadius: 8, padding: "0.875rem 1.125rem" }}>
-      <CheckCircle2 size={20} color="#15803D" />
-      <p style={{ margin: 0, fontSize: "0.8125rem", fontWeight: 700, color: "#15803D" }}>
-        Clean assessment — no critical or high-severity findings. This tender is in good shape.
-      </p>
-    </div>
-  );
-  if (reduced) return body;
-  return (
-    <motion.div initial={{ opacity: 0, scale: 0.92 }} animate={{ opacity: 1, scale: 1 }} transition={{ type: "spring", stiffness: 280, damping: 16, delay: 0.35 }}>
-      {body}
-    </motion.div>
-  );
-}
-
-export { motion, AnimatePresence, useReducedMotion };
-</file>
-
 <file path=".env.example">
 VITE_SUPABASE_URL=https://your-project-ref.supabase.co
 VITE_SUPABASE_ANON_KEY=your-supabase-anon-or-publishable-key
@@ -639,6 +451,194 @@ export function AuditChatSidebar({ auditId, open, onToggle }: {
     </>
   );
 }
+</file>
+
+<file path="src/components/motion.tsx">
+// src/components/motion.tsx — shared animation primitives for BidSwift AI.
+// Rules: motion never gates data; every component has a reduced-motion static fallback.
+import { motion, AnimatePresence, useReducedMotion } from "framer-motion";
+import { useEffect, useState, type ReactNode, type CSSProperties } from "react";
+import { CheckCircle2 } from "lucide-react";
+
+// ─── Count-up ─────────────────────────────────────────────────────────────────
+
+export function useCountUp(target: number, duration = 700) {
+  const reduced = useReducedMotion();
+  const [value, setValue] = useState(reduced ? target : 0);
+  useEffect(() => {
+    if (reduced) { setValue(target); return; }
+    let raf = 0;
+    const start = performance.now();
+    const tick = (now: number) => {
+      const p = Math.min((now - start) / duration, 1);
+      setValue(target * (1 - Math.pow(1 - p, 3))); // easeOutCubic
+      if (p < 1) raf = requestAnimationFrame(tick);
+    };
+    raf = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(raf);
+  }, [target, duration, reduced]);
+  return value;
+}
+
+export function CountUp({ value, format }: { value: number; format?: (v: number) => string }) {
+  const v = useCountUp(value);
+  return <>{format ? format(v) : Math.round(v).toLocaleString()}</>;
+}
+
+// ─── Score reveal (scale-in + count-up) ───────────────────────────────────────
+
+export function AnimatedScore({ value, suffix, color, fontSize = "1.75rem" }: {
+  value: number; suffix?: ReactNode; color: string; fontSize?: string;
+}) {
+  const reduced = useReducedMotion();
+  const shown = Math.round(useCountUp(value));
+  const inner = (
+    <span style={{ fontSize, fontWeight: 800, color, letterSpacing: "-0.02em", lineHeight: 1, fontFamily: "'JetBrains Mono','Fira Code',monospace", display: "inline-block" }}>
+      {shown}{suffix}
+    </span>
+  );
+  if (reduced) return inner;
+  return (
+    <motion.span
+      initial={{ scale: 0.65, opacity: 0 }}
+      animate={{ scale: 1, opacity: 1 }}
+      transition={{ type: "spring", stiffness: 300, damping: 20 }}
+      style={{ display: "inline-block" }}
+    >
+      {inner}
+    </motion.span>
+  );
+}
+
+// ─── Staggered reveal ─────────────────────────────────────────────────────────
+
+export function StaggeredList({ children, className, style, delay = 0, stagger = 0.12 }: {
+  children: ReactNode; className?: string; style?: CSSProperties; delay?: number; stagger?: number;
+}) {
+  const reduced = useReducedMotion();
+  if (reduced) return <div className={className} style={style}>{children}</div>;
+  return (
+    <motion.div
+      className={className} style={style}
+      initial="hidden" animate="show"
+      variants={{ hidden: {}, show: { transition: { staggerChildren: stagger, delayChildren: delay } } }}
+    >
+      {children}
+    </motion.div>
+  );
+}
+
+export function StaggerItem({ children, className, style, sharp = false }: {
+  children: ReactNode; className?: string; style?: CSSProperties;
+  /** sharp = urgent entrance (critical findings); soft = default */
+  sharp?: boolean;
+}) {
+  const reduced = useReducedMotion();
+  if (reduced) return <div className={className} style={style}>{children}</div>;
+  return (
+    <motion.div
+      className={className} style={style}
+      variants={{
+        hidden: sharp ? { opacity: 0, x: -14 } : { opacity: 0, y: 10 },
+        show: sharp
+          ? { opacity: 1, x: 0, transition: { type: "spring", stiffness: 520, damping: 26 } }
+          : { opacity: 1, y: 0, transition: { duration: 0.32, ease: "easeOut" } },
+      }}
+    >
+      {children}
+    </motion.div>
+  );
+}
+
+// ─── Collapsible (animated height, never hides data behind motion) ───────────
+
+export function Collapsible({ open, children }: { open: boolean; children: ReactNode }) {
+  const reduced = useReducedMotion();
+  if (reduced) return open ? <div>{children}</div> : null;
+  return (
+    <AnimatePresence initial={false}>
+      {open && (
+        <motion.div
+          initial={{ height: 0, opacity: 0 }}
+          animate={{ height: "auto", opacity: 1 }}
+          exit={{ height: 0, opacity: 0 }}
+          transition={{ duration: 0.25, ease: "easeOut" }}
+          style={{ overflow: "hidden" }}
+        >
+          {children}
+        </motion.div>
+      )}
+    </AnimatePresence>
+  );
+}
+
+// ─── Staged processing indicator (no blob spinners) ──────────────────────────
+
+export function ProcessingStages({ stages, hint }: { stages: string[]; hint?: string }) {
+  const reduced = useReducedMotion();
+  const [active, setActive] = useState(0);
+
+  // Advance stages on a heartbeat; the final stage holds until real data unmounts us.
+  useEffect(() => {
+    if (reduced) return;
+    const id = setInterval(() => setActive((a) => Math.min(a + 1, stages.length - 1)), 1800);
+    return () => clearInterval(id);
+  }, [stages.length, reduced]);
+
+  return (
+    <div style={{ maxWidth: 360, margin: "0 auto", textAlign: "left", display: "flex", flexDirection: "column", gap: "0.75rem" }}>
+      {stages.map((s, i) => {
+        const done = i < active;
+        const current = i === active;
+        return (
+          <div key={s} style={{ display: "flex", alignItems: "center", gap: "0.625rem", fontSize: "0.8125rem", color: done ? "#15803D" : current ? "#0F2240" : "#9CA3AF", fontWeight: current ? 700 : 500 }}>
+            {done ? (
+              reduced ? <CheckCircle2 size={15} /> : (
+                <motion.span initial={{ scale: 0 }} animate={{ scale: 1 }} transition={{ type: "spring", stiffness: 400, damping: 18 }} style={{ display: "flex" }}>
+                  <CheckCircle2 size={15} />
+                </motion.span>
+              )
+            ) : current ? (
+              reduced ? <span style={{ width: 15, textAlign: "center" }}>•</span> : (
+                <motion.span
+                  animate={{ scale: [1, 1.4, 1], opacity: [1, 0.55, 1] }}
+                  transition={{ duration: 1.1, repeat: Infinity, ease: "easeInOut" }}
+                  style={{ width: 9, height: 9, margin: 3, borderRadius: "50%", background: "#1D4ED8", display: "inline-block" }}
+                />
+              )
+            ) : (
+              <span style={{ width: 9, height: 9, margin: 3, borderRadius: "50%", background: "#E4E7EC", display: "inline-block" }} />
+            )}
+            {s}
+          </div>
+        );
+      })}
+      {hint && <p style={{ fontSize: "0.6875rem", color: "#9CA3AF", marginTop: "0.5rem" }}>{hint}</p>}
+    </div>
+  );
+}
+
+// ─── Clean-audit payoff ───────────────────────────────────────────────────────
+
+export function CleanAuditBeat() {
+  const reduced = useReducedMotion();
+  const body = (
+    <div style={{ display: "flex", alignItems: "center", gap: "0.75rem", background: "#F0FDF4", border: "1px solid #BBF7D0", borderRadius: 8, padding: "0.875rem 1.125rem" }}>
+      <CheckCircle2 size={20} color="#15803D" />
+      <p style={{ margin: 0, fontSize: "0.8125rem", fontWeight: 700, color: "#15803D" }}>
+        Clean assessment — no critical or high-severity findings. This tender is in good shape.
+      </p>
+    </div>
+  );
+  if (reduced) return body;
+  return (
+    <motion.div initial={{ opacity: 0, scale: 0.92 }} animate={{ opacity: 1, scale: 1 }} transition={{ type: "spring", stiffness: 280, damping: 16, delay: 0.35 }}>
+      {body}
+    </motion.div>
+  );
+}
+
+export { motion, AnimatePresence, useReducedMotion };
 </file>
 
 <file path="src/components/RiskUtils.tsx">
@@ -1193,43 +1193,6 @@ Only in repo/supabase/migrations: 002_workflow_status.sql
       "destination": "/index.html"
     }
   ]
-}
-</file>
-
-<file path="package.json">
-{
-  "name": "bidswift-ai",
-  "private": true,
-  "type": "module",
-  "scripts": {
-    "dev": "vite",
-    "build": "vite build",
-    "typecheck": "tsc --noEmit",
-    "preview": "vite preview"
-  },
-  "dependencies": {
-    "@supabase/supabase-js": "^2.89.0",
-    "@tanstack/react-router": "^1.170.15",
-    "framer-motion": "^12.42.2",
-    "groq-sdk": "^1.3.0",
-    "lucide-react": "^0.556.0",
-    "react": "^18.3.1",
-    "react-dom": "^18.3.1",
-    "recharts": "^2.12.7",
-    "tailwindcss": "^4.1.17",
-    "tw-animate-css": "^1.4.0",
-    "xlsx": "^0.18.5"
-  },
-  "devDependencies": {
-    "@tailwindcss/vite": "^4.1.17",
-    "@tanstack/router-plugin": "^1.168.18",
-    "@types/node": "^20.12.12",
-    "@types/react": "^18.3.3",
-    "@types/react-dom": "^18.3.0",
-    "@vitejs/plugin-react": "^4.3.0",
-    "typescript": "^5.4.5",
-    "vite": "^6.4.3"
-  }
 }
 </file>
 
@@ -2547,6 +2510,733 @@ export const routeTree = rootRouteImport
   ._addFileTypes<FileRouteTypes>();
 </file>
 
+<file path="src/utils/download.ts">
+import * as XLSX from 'xlsx';
+
+export const downloadAuditExcel = (result: any) => {
+  try {
+    const wb = XLSX.utils.book_new();
+    const timestamp = new Date().toISOString().split('T')[0];
+    const safeProjectName = (result.project_name || "Project").replace(/[^a-z0-9]/gi, '_').toLowerCase();
+
+    // --- SHEET 1: EVALUATION MATRIX ---
+    const evaluationData = [
+      ["BIDSWIFT AI FORENSIC AUDIT REPORT", ""],
+      ["Project Name", result.project_name || "N/A"],
+      ["Audit Date", new Date().toLocaleString()],
+      ["", ""],
+      ["CRITICAL METRICS", ""],
+      ["Composite Risk Index", `${result.risk_score ?? 0}/100`],
+      ["System Recommendation", result.recommendation || "N/A"],
+      ["Contract Value (ETB)", (result.contract_value || 0).toLocaleString()],
+      ["Target Margin", `${result.target_margin || 0}%`],
+      ["", ""],
+      ["EXECUTIVE SUMMARY", ""],
+      [result.executive_summary || "No summary provided.", ""]
+    ];
+    const ws1 = XLSX.utils.aoa_to_sheet(evaluationData);
+    ws1['!cols'] = [{ wch: 30 }, { wch: 70 }];
+
+    // --- SHEET 2: RISK REGISTER ---
+    const riskRows = [["CATEGORY", "RISK ELEMENT", "SEVERITY", "DESCRIPTION"]];
+    
+    // Add Contractual Traps (Defensive check)
+    (result.contractual_traps || []).forEach((t: any) => {
+      riskRows.push(["Contractual", t.clause_type || "Unknown", t.severity || "WATCH", t.description || ""]);
+    });
+    
+    // Add Scope Gaps
+    (result.scope_gaps || []).forEach((g: any) => {
+      riskRows.push(["Scope Omission", g.missing_element || "Gap", "WATCH", g.risk_impact || ""]);
+    });
+
+    const ws2 = XLSX.utils.aoa_to_sheet(riskRows);
+    ws2['!cols'] = [{ wch: 20 }, { wch: 25 }, { wch: 15 }, { wch: 60 }];
+
+    // --- SHEET 3: BoQ ANALYSIS ---
+    const boqRows = [["ITEM/SECTION", "VARIANCE/ERROR", "TECHNICAL NOTE"]];
+    
+    (result.arithmetic_errors || []).forEach((e: any) => {
+      boqRows.push([`Error: ${e.location}`, e.severity || "HIGH", e.description || ""]);
+    });
+
+    (result.market_variance || []).forEach((m: any) => {
+      boqRows.push([m.item || "Material", `${m.variance_pct || 0}%`, m.note || ""]);
+    });
+
+    const ws3 = XLSX.utils.aoa_to_sheet(boqRows);
+    ws3['!cols'] = [{ wch: 35 }, { wch: 25 }, { wch: 60 }];
+
+    XLSX.utils.book_append_sheet(wb, ws1, "Evaluation Matrix");
+    XLSX.utils.book_append_sheet(wb, ws2, "Risk Register");
+    XLSX.utils.book_append_sheet(wb, ws3, "BoQ Analysis");
+
+    XLSX.writeFile(wb, `BidSwiftAI_Audit_${safeProjectName}_${timestamp}.xlsx`);
+  } catch (err) {
+    console.error("Excel Export Failed:", err);
+    alert("Excel Export failed due to missing data structures.");
+  }
+};
+</file>
+
+<file path="src/vite-env.d.ts">
+/// <reference types="vite/client" />
+</file>
+
+<file path="SUPABASE_SETUP.md">
+# Supabase Setup
+
+1. Create a Supabase project.
+2. Copy `.env.example` to `.env.local`.
+3. Set `VITE_SUPABASE_URL` to your Project URL.
+4. Set `VITE_SUPABASE_ANON_KEY` to your anon or publishable browser key.
+5. In Supabase SQL Editor, run `supabase/migrations/001_initial_security.sql`.
+6. In Authentication > URL Configuration, add your local site URL:
+   `http://localhost:5173`
+   (you can also add `http://127.0.0.1:5173` if you prefer).
+7. Add redirect URLs:
+   - `http://localhost:5173`
+   - `http://localhost:5173/auth`
+8. For production, add your real domain to Site URL and Redirect URLs.
+
+The frontend key is allowed to be public. The database is protected by Row Level Security, so users can only read, insert, update, and delete their own audit rows.
+</file>
+
+<file path="supabase/migrations/001_initial_security.sql">
+-- BidSwift AI Supabase schema
+-- Run this in the Supabase SQL editor or through the Supabase CLI.
+
+create extension if not exists pgcrypto;
+
+create table if not exists public.profiles (
+  id uuid primary key references auth.users(id) on delete cascade,
+  email text not null,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+
+create table if not exists public.audits (
+  id uuid primary key default gen_random_uuid(),
+  user_id uuid not null references auth.users(id) on delete cascade,
+  project_name text not null check (char_length(trim(project_name)) between 1 and 200),
+  file_name text,
+  contract_value numeric(18, 2) not null default 0 check (contract_value >= 0),
+  target_margin numeric(6, 2) not null default 0 check (target_margin >= 0 and target_margin <= 100),
+  risk_score integer check (risk_score is null or (risk_score >= 0 and risk_score <= 100)),
+  status text not null default 'completed' check (status in ('draft', 'running', 'completed', 'failed')),
+  analysis jsonb not null default '{}'::jsonb,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+
+create index if not exists audits_user_created_idx on public.audits (user_id, created_at desc);
+create index if not exists audits_analysis_gin_idx on public.audits using gin (analysis);
+
+alter table public.profiles enable row level security;
+alter table public.profiles force row level security;
+alter table public.audits enable row level security;
+alter table public.audits force row level security;
+
+grant usage on schema public to anon, authenticated;
+grant select, insert, update on public.profiles to authenticated;
+grant select, insert, update, delete on public.audits to authenticated;
+
+drop policy if exists "profiles_select_own" on public.profiles;
+create policy "profiles_select_own"
+  on public.profiles
+  for select
+  to authenticated
+  using ((select auth.uid()) is not null and (select auth.uid()) = id);
+
+drop policy if exists "profiles_update_own" on public.profiles;
+create policy "profiles_update_own"
+  on public.profiles
+  for update
+  to authenticated
+  using ((select auth.uid()) is not null and (select auth.uid()) = id)
+  with check ((select auth.uid()) is not null and (select auth.uid()) = id);
+
+drop policy if exists "audits_select_own" on public.audits;
+create policy "audits_select_own"
+  on public.audits
+  for select
+  to authenticated
+  using ((select auth.uid()) is not null and (select auth.uid()) = user_id);
+
+drop policy if exists "audits_insert_own" on public.audits;
+create policy "audits_insert_own"
+  on public.audits
+  for insert
+  to authenticated
+  with check ((select auth.uid()) is not null and (select auth.uid()) = user_id);
+
+drop policy if exists "audits_update_own" on public.audits;
+create policy "audits_update_own"
+  on public.audits
+  for update
+  to authenticated
+  using ((select auth.uid()) is not null and (select auth.uid()) = user_id)
+  with check ((select auth.uid()) is not null and (select auth.uid()) = user_id);
+
+drop policy if exists "audits_delete_own" on public.audits;
+create policy "audits_delete_own"
+  on public.audits
+  for delete
+  to authenticated
+  using ((select auth.uid()) is not null and (select auth.uid()) = user_id);
+
+create or replace function public.set_updated_at()
+returns trigger
+language plpgsql
+set search_path = public
+as $$
+begin
+  new.updated_at = now();
+  return new;
+end;
+$$;
+
+drop trigger if exists profiles_set_updated_at on public.profiles;
+create trigger profiles_set_updated_at
+  before update on public.profiles
+  for each row execute function public.set_updated_at();
+
+drop trigger if exists audits_set_updated_at on public.audits;
+create trigger audits_set_updated_at
+  before update on public.audits
+  for each row execute function public.set_updated_at();
+
+create or replace function public.handle_new_user()
+returns trigger
+language plpgsql
+security definer
+set search_path = public
+as $$
+begin
+  insert into public.profiles (id, email)
+  values (new.id, coalesce(new.email, ''))
+  on conflict (id) do update
+    set email = excluded.email,
+        updated_at = now();
+
+  return new;
+end;
+$$;
+
+drop trigger if exists on_auth_user_created on auth.users;
+create trigger on_auth_user_created
+  after insert on auth.users
+  for each row execute function public.handle_new_user();
+</file>
+
+<file path="tsconfig.json">
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "lib": ["DOM", "DOM.Iterable", "ES2022"],
+    "module": "ESNext",
+    "skipLibCheck": true,
+    "moduleResolution": "bundler",
+    "allowImportingTsExtensions": true,
+    "resolveJsonModule": true,
+    "isolatedModules": true,
+    "noEmit": true,
+    "jsx": "react-jsx",
+    "strict": true,
+    "baseUrl": ".",
+    "paths": {
+      "@/*": ["src/*"]
+    }
+  },
+  "include": ["src"]
+}
+</file>
+
+<file path="vite.config.ts">
+import path from "node:path";
+import { pathToFileURL } from "node:url";
+import tailwindcss from "@tailwindcss/vite";
+import { tanstackRouter } from "@tanstack/router-plugin/vite";
+import react from "@vitejs/plugin-react";
+import { defineConfig, loadEnv, type Plugin } from "vite";
+
+// Runs your Vercel-style /api/*.js serverless functions locally under plain
+// `vite dev`, so the Vercel CLI is not required for local development.
+// Each file in /api must default-export a (req, res) => {} handler — same
+// shape Vercel expects, so this file also works unmodified when deployed.
+function localApiPlugin(): Plugin {
+  return {
+    name: "local-api",
+    configureServer(server) {
+      server.middlewares.use(async (req, res, next) => {
+        if (!req.url || !req.url.startsWith("/api/")) return next();
+
+        const fnName = req.url.split("?")[0].replace("/api/", "");
+        const filePath = path.resolve(__dirname, "api", `${fnName}.js`);
+
+        try {
+          // Vercel parses the JSON body for you; plain Node/Vite middleware
+          // does not, so do it ourselves.
+          const chunks: Buffer[] = [];
+          for await (const chunk of req) chunks.push(chunk as Buffer);
+          const raw = Buffer.concat(chunks).toString("utf-8");
+          (req as any).body = raw ? JSON.parse(raw) : {};
+
+          // Vercel's `res` adds .status()/.json() helpers on top of Node's
+          // ServerResponse — polyfill just those two.
+          (res as any).status = (code: number) => {
+            res.statusCode = code;
+            return res;
+          };
+          (res as any).json = (payload: unknown) => {
+            res.setHeader("Content-Type", "application/json");
+            res.end(JSON.stringify(payload));
+          };
+
+          // file:// URL + cache-busting query so edits to /api files are
+          // picked up without restarting the dev server, and so it resolves
+          // correctly on Windows (a raw absolute path is not a valid ESM
+          // specifier there).
+          const fileUrl = `${pathToFileURL(filePath).href}?t=${Date.now()}`;
+          const mod = await import(fileUrl);
+          await mod.default(req, res);
+        } catch (err) {
+          console.error(`[local-api] ${fnName} failed:`, err);
+          if (!res.headersSent) {
+            res.statusCode = 500;
+            res.setHeader("Content-Type", "application/json");
+          }
+          res.end(JSON.stringify({ error: "Local API handler crashed. Check the terminal." }));
+        }
+      });
+    },
+  };
+}
+
+export default defineConfig(({ mode }) => {
+  // Vite only loads VITE_-prefixed vars into import.meta.env by default.
+  // The /api functions need the server-side-only vars too (GROQ_API_KEY,
+  // SUPABASE_SERVICE_ROLE_KEY) — loadEnv with an empty prefix pulls in
+  // everything from .env, and we copy it onto process.env so the
+  // dynamically imported handlers above can read it via process.env.X.
+  const env = loadEnv(mode, process.cwd(), "");
+  Object.assign(process.env, env);
+
+  return {
+    plugins: [
+      tanstackRouter({
+        target: "react",
+        routesDirectory: "./src/routes",
+        generatedRouteTree: "./src/routeTree.gen.ts",
+        quoteStyle: "double",
+        semicolons: true,
+      }),
+      react(),
+      tailwindcss(),
+      localApiPlugin(),
+    ],
+    resolve: {
+      alias: {
+        "@": path.resolve(__dirname, "./src"),
+      },
+    },
+    build: {
+      rollupOptions: {
+        output: {
+          manualChunks: {
+            charts: ["recharts"],
+            excel: ["xlsx"],
+            supabase: ["@supabase/supabase-js"],
+            vendor: ["react", "react-dom", "@tanstack/react-router"],
+          },
+        },
+      },
+    },
+  };
+});
+</file>
+
+<file path="index.html">
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <link rel="icon" type="image/png" href="/logo.png" />
+    <title>BidSwift AI | Bid Intelligence</title>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>
+</file>
+
+<file path="package.json">
+{
+  "name": "bidswift-ai",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "typecheck": "tsc --noEmit",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "@supabase/supabase-js": "^2.89.0",
+    "@tanstack/react-router": "^1.170.15",
+    "framer-motion": "^12.42.2",
+    "groq-sdk": "^1.3.0",
+    "lucide-react": "^0.556.0",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "recharts": "^2.12.7",
+    "tailwindcss": "^4.1.17",
+    "tw-animate-css": "^1.4.0",
+    "xlsx": "^0.18.5"
+  },
+  "devDependencies": {
+    "@tailwindcss/vite": "^4.1.17",
+    "@tanstack/router-plugin": "^1.168.18",
+    "@types/node": "^20.12.12",
+    "@types/react": "^18.3.3",
+    "@types/react-dom": "^18.3.0",
+    "@vitejs/plugin-react": "^4.3.0",
+    "typescript": "^5.4.5",
+    "vite": "^6.4.3"
+  }
+}
+</file>
+
+<file path="src/components/AppShell.tsx">
+import { Link, useRouter } from "@tanstack/react-router";
+import {
+  LayoutGrid,
+  FileSearch,
+  History,
+  LogOut,
+  Rss,
+  Bell,
+  Settings,
+} from "lucide-react";
+import { supabase } from "@/integrations/supabase/client";
+import type { ReactNode } from "react";
+
+// Standard import
+import logo from "../assets/logo.png";
+
+const navItems = [
+  { to: "/dashboard", label: "Dashboard", icon: LayoutGrid },
+  { to: "/audit", label: "Bid Audit", icon: FileSearch },
+  { to: "/tender-feed", label: "Live Tenders", icon: Rss },
+  { to: "/history", label: "History Log", icon: History },
+] as const;
+
+export function AppShell({ children, userEmail }: { children: ReactNode; userEmail?: string | null }) {
+  const router = useRouter();
+
+  const signOut = async () => {
+    await supabase.auth.signOut();
+    router.navigate({ to: "/auth", replace: true });
+  };
+
+  return (
+    <div className="min-h-screen flex bg-[#fcfcfc]">
+      {/* SIDEBAR - INDUSTRIAL SPEC */}
+      <aside
+        className="w-[280px] bg-white border-r border-slate-200 fixed inset-y-0 z-40 hidden md:flex flex-col"
+      >
+        {/* MASSIVE BRAND AREA */}
+        <div style={{ padding: "3.5rem 2rem" }} className="border-b border-slate-100 bg-[#FCFCFD]">
+          <Link to="/" style={{ display: "block", textDecoration: "none" }}>
+            <img 
+              src={logo} 
+              alt="BidSwift AI" 
+              style={{ 
+                width: "100%", 
+                height: "auto", 
+                maxWidth: "220px", // Scaled to fill sidebar width
+                display: "block",
+                filter: "contrast(1.1) brightness(1.02)", // Match login page clarity
+                margin: "0 auto"
+              }} 
+            />
+          </Link>
+        </div>
+
+        {/* NAVIGATION */}
+        <nav className="flex-1 p-6 space-y-2">
+          <div className="text-[10px] font-black text-slate-300 uppercase tracking-[0.25em] mb-6 px-4">
+            System Core
+          </div>
+          {navItems.map(({ to, label, icon: Icon }) => (
+            <Link
+              key={to}
+              to={to}
+              activeProps={{ className: "bg-slate-900 text-white shadow-xl translate-x-1" }}
+              inactiveProps={{ className: "text-slate-500 hover:bg-slate-50" }}
+              className="flex items-center gap-4 px-5 py-4 rounded-lg text-[11px] font-black uppercase tracking-[0.15em] no-underline transition-all duration-200"
+            >
+              <Icon size={16} />
+              {label}
+            </Link>
+          ))}
+        </nav>
+
+        {/* SIDEBAR FOOTER */}
+        <div className="p-8 border-t border-slate-100 bg-slate-50/50">
+          <div className="px-4 mb-6">
+            <p className="text-[9px] font-black text-slate-400 uppercase tracking-widest mb-1">
+              Active Operator
+            </p>
+            <p className="text-[11px] font-bold text-slate-900 truncate">
+              {userEmail}
+            </p>
+          </div>
+          <button 
+            onClick={signOut} 
+            className="flex items-center gap-3 w-full px-4 py-3 text-[11px] font-black uppercase text-red-500 hover:text-red-700 transition-colors bg-transparent border-none cursor-pointer"
+          >
+            <LogOut size={16} /> Terminate
+          </button>
+        </div>
+      </aside>
+
+      {/* MAIN VIEWPORT */}
+      <div className="flex-1 md:ml-[280px] flex flex-col min-h-screen">
+        {/* CLEAN ENGINEERING HEADER */}
+        <header className="h-20 bg-white border-b border-slate-200 flex items-center justify-between px-12 sticky top-0 z-30">
+          <div className="flex items-center gap-2">
+            <div className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></div>
+            <div className="text-[10px] font-black text-slate-400 uppercase tracking-[0.2em]">
+              System Status: <span className="text-emerald-600">Operational</span>
+            </div>
+          </div>
+          
+          <div className="flex items-center gap-8">
+            <div className="flex gap-4">
+              <button className="text-slate-300 hover:text-slate-900 transition-colors"><Bell size={18}/></button>
+              <button className="text-slate-300 hover:text-slate-900 transition-colors"><Settings size={18}/></button>
+            </div>
+            <div className="h-10 w-[1px] bg-slate-200"></div>
+            <div className="flex items-center gap-4">
+               <span className="text-[10px] font-black text-slate-400 uppercase tracking-widest hidden lg:block">Command Center</span>
+               <div className="w-10 h-10 bg-slate-900 rounded-full flex items-center justify-center text-[11px] font-black text-white uppercase shadow-lg border-2 border-white">
+                {userEmail?.charAt(0) || 'U'}
+              </div>
+            </div>
+          </div>
+        </header>
+
+        {/* CONTENT */}
+        <main className="p-12 w-full max-w-[1600px] mx-auto">
+          {children}
+        </main>
+      </div>
+    </div>
+  );
+}
+</file>
+
+<file path="src/integrations/supabase/audits.ts">
+import { useCallback, useEffect, useState } from "react";
+import { supabase } from "./client";
+
+export type AuditRow = {
+  id: string;
+  user_id: string;
+  project_name: string;
+  file_name: string | null;
+  contract_value: number;
+  target_margin: number;
+  risk_score: number | null;
+  status: string;
+  analysis: any;
+  created_at: string;
+};
+
+export async function fetchAudits(): Promise<AuditRow[]> {
+  const { data: { user } } = await supabase.auth.getUser();
+  if (!user) return [];
+
+  const { data, error } = await supabase
+    .from("audits")
+    .select("*")
+    .eq("user_id", user.id)
+    .order("created_at", { ascending: false });
+
+  if (error) throw error;
+  return (data as AuditRow[]) || [];
+}
+
+export async function insertAudit(audit: Omit<AuditRow, "id" | "created_at">) {
+  const { data, error } = await supabase
+    .from("audits")
+    .insert([audit])
+    .select()
+    .single();
+    
+  if (error) throw error;
+  return data as AuditRow;
+}
+
+export async function deleteAudit(id: string) {
+  const { error } = await supabase
+    .from("audits")
+    .delete()
+    .eq("id", id);
+    
+  if (error) throw error;
+  return true;
+}
+
+export function useAudits() {
+  const [audits, setAudits] = useState<AuditRow[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+
+  const load = useCallback(async () => {
+    try {
+      const data = await fetchAudits();
+      setAudits(data);
+      setError(null);
+    } catch (err: any) {
+      setError(err.message);
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    load();
+
+    // Enable auto-refresh on any DB change
+    const channel = supabase
+      .channel('db-changes')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'audits' }, () => {
+        load();
+      })
+      .subscribe();
+
+    return () => {
+      supabase.removeChannel(channel);
+    };
+  }, [load]);
+
+  return { audits, loading, error, reload: load };
+}
+
+export function dispatchAuditsUpdated() {
+  window.dispatchEvent(new Event("bidswift:audits-updated"));
+}
+</file>
+
+<file path="src/routes/auth.tsx">
+import { createFileRoute, useRouter } from "@tanstack/react-router";
+import { useState } from "react";
+import { supabase } from "@/integrations/supabase/client";
+import { ArrowRight, Loader2, Lock, Mail } from "lucide-react";
+import logo from "../assets/logo.png";
+
+export const Route = createFileRoute("/auth")({
+  component: AuthPage,
+});
+
+function AuthPage() {
+  const router = useRouter();
+  const [mode, setMode] = useState<"signin" | "signup">("signin");
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const submit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setError(null);
+    setLoading(true);
+    try {
+      if (mode === "signup") {
+        const { error } = await supabase.auth.signUp({ email, password });
+        if (error) throw error;
+        alert("Check your email.");
+      } else {
+        const { error } = await supabase.auth.signInWithPassword({ email, password });
+        if (error) throw error;
+        router.navigate({ to: "/dashboard" });
+      }
+    } catch (err: any) {
+      setError(err.message);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  return (
+    <div style={{ minHeight: "100vh", display: "flex", background: "#FFFFFF" }}>
+      {/* MASSIVE BRAND PANEL */}
+      <div className="hidden lg:flex flex-col justify-center items-center w-[600px] bg-[#0F2240] p-20 text-white">
+        <div className="w-full space-y-16">
+          <img 
+            src={logo} 
+            alt="BidSwift AI" 
+            style={{ 
+              width: "100%", 
+              maxWidth: "400px", // MASSIVE SCALE
+              height: "auto", 
+              filter: "brightness(0) invert(1)" 
+            }} 
+          />
+          <div className="space-y-6">
+            <h1 className="text-5xl font-black tracking-tighter uppercase leading-[0.9]">PRECISION <br/>INTELLIGENCE.</h1>
+            <div className="h-1 w-24 bg-blue-500"></div>
+            <p className="text-slate-400 text-sm font-bold uppercase tracking-[0.2em] leading-relaxed max-w-sm">
+              Standardizing Bid Risk for Infrastructure Assets.
+            </p>
+          </div>
+        </div>
+      </div>
+
+      <div className="flex-1 flex items-center justify-center bg-[#fcfcfc] p-8">
+        <div className="w-full max-w-[360px] space-y-12">
+          <div className="space-y-2">
+            <h2 className="text-2xl font-black text-slate-900 uppercase tracking-tighter">System Login</h2>
+            <p className="text-[10px] font-black text-slate-400 uppercase tracking-[0.3em]">Operator Terminal Access</p>
+          </div>
+
+          <form onSubmit={submit} className="space-y-6">
+            <div className="space-group space-y-2">
+              <label className="text-[10px] font-black uppercase text-slate-500 tracking-widest">Email Address</label>
+              <div className="relative">
+                <Mail className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-300" size={16} />
+                <input type="email" className="field-input pl-12 py-4 border-slate-200" value={email} onChange={e => setEmail(e.target.value)} required />
+              </div>
+            </div>
+            <div className="space-group space-y-2">
+              <label className="text-[10px] font-black uppercase text-slate-500 tracking-widest">Security Key</label>
+              <div className="relative">
+                <Lock className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-300" size={16} />
+                <input type="password" className="field-input pl-12 py-4 border-slate-200" value={password} onChange={e => setPassword(e.target.value)} required />
+              </div>
+            </div>
+
+            {error && <div className="p-4 bg-red-50 text-red-700 text-[10px] font-black uppercase border border-red-100">{error}</div>}
+
+            <button disabled={loading} className="w-full bg-slate-900 text-white py-5 font-black text-xs uppercase tracking-[0.3em] hover:bg-black transition-all flex items-center justify-center gap-3">
+              {loading ? <Loader2 className="animate-spin" size={16} /> : <>Initiate Session <ArrowRight size={16}/></>}
+            </button>
+          </form>
+          
+          <button onClick={() => setMode(mode === "signin" ? "signup" : "signin")} className="w-full text-[10px] font-black text-slate-400 uppercase tracking-widest hover:text-blue-600 transition-colors">
+            {mode === "signin" ? "Request Terminal Access" : "Return to Login"}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+</file>
+
 <file path="src/styles.css">
 @import "tailwindcss" source(none);
 @source "../src";
@@ -2947,591 +3637,6 @@ export const routeTree = rootRouteImport
 }
 </file>
 
-<file path="src/utils/download.ts">
-import * as XLSX from 'xlsx';
-
-export const downloadAuditExcel = (result: any) => {
-  try {
-    const wb = XLSX.utils.book_new();
-    const timestamp = new Date().toISOString().split('T')[0];
-    const safeProjectName = (result.project_name || "Project").replace(/[^a-z0-9]/gi, '_').toLowerCase();
-
-    // --- SHEET 1: EVALUATION MATRIX ---
-    const evaluationData = [
-      ["BIDSWIFT AI FORENSIC AUDIT REPORT", ""],
-      ["Project Name", result.project_name || "N/A"],
-      ["Audit Date", new Date().toLocaleString()],
-      ["", ""],
-      ["CRITICAL METRICS", ""],
-      ["Composite Risk Index", `${result.risk_score ?? 0}/100`],
-      ["System Recommendation", result.recommendation || "N/A"],
-      ["Contract Value (ETB)", (result.contract_value || 0).toLocaleString()],
-      ["Target Margin", `${result.target_margin || 0}%`],
-      ["", ""],
-      ["EXECUTIVE SUMMARY", ""],
-      [result.executive_summary || "No summary provided.", ""]
-    ];
-    const ws1 = XLSX.utils.aoa_to_sheet(evaluationData);
-    ws1['!cols'] = [{ wch: 30 }, { wch: 70 }];
-
-    // --- SHEET 2: RISK REGISTER ---
-    const riskRows = [["CATEGORY", "RISK ELEMENT", "SEVERITY", "DESCRIPTION"]];
-    
-    // Add Contractual Traps (Defensive check)
-    (result.contractual_traps || []).forEach((t: any) => {
-      riskRows.push(["Contractual", t.clause_type || "Unknown", t.severity || "WATCH", t.description || ""]);
-    });
-    
-    // Add Scope Gaps
-    (result.scope_gaps || []).forEach((g: any) => {
-      riskRows.push(["Scope Omission", g.missing_element || "Gap", "WATCH", g.risk_impact || ""]);
-    });
-
-    const ws2 = XLSX.utils.aoa_to_sheet(riskRows);
-    ws2['!cols'] = [{ wch: 20 }, { wch: 25 }, { wch: 15 }, { wch: 60 }];
-
-    // --- SHEET 3: BoQ ANALYSIS ---
-    const boqRows = [["ITEM/SECTION", "VARIANCE/ERROR", "TECHNICAL NOTE"]];
-    
-    (result.arithmetic_errors || []).forEach((e: any) => {
-      boqRows.push([`Error: ${e.location}`, e.severity || "HIGH", e.description || ""]);
-    });
-
-    (result.market_variance || []).forEach((m: any) => {
-      boqRows.push([m.item || "Material", `${m.variance_pct || 0}%`, m.note || ""]);
-    });
-
-    const ws3 = XLSX.utils.aoa_to_sheet(boqRows);
-    ws3['!cols'] = [{ wch: 35 }, { wch: 25 }, { wch: 60 }];
-
-    XLSX.utils.book_append_sheet(wb, ws1, "Evaluation Matrix");
-    XLSX.utils.book_append_sheet(wb, ws2, "Risk Register");
-    XLSX.utils.book_append_sheet(wb, ws3, "BoQ Analysis");
-
-    XLSX.writeFile(wb, `BidSwiftAI_Audit_${safeProjectName}_${timestamp}.xlsx`);
-  } catch (err) {
-    console.error("Excel Export Failed:", err);
-    alert("Excel Export failed due to missing data structures.");
-  }
-};
-</file>
-
-<file path="src/vite-env.d.ts">
-/// <reference types="vite/client" />
-</file>
-
-<file path="SUPABASE_SETUP.md">
-# Supabase Setup
-
-1. Create a Supabase project.
-2. Copy `.env.example` to `.env.local`.
-3. Set `VITE_SUPABASE_URL` to your Project URL.
-4. Set `VITE_SUPABASE_ANON_KEY` to your anon or publishable browser key.
-5. In Supabase SQL Editor, run `supabase/migrations/001_initial_security.sql`.
-6. In Authentication > URL Configuration, add your local site URL:
-   `http://localhost:5173`
-   (you can also add `http://127.0.0.1:5173` if you prefer).
-7. Add redirect URLs:
-   - `http://localhost:5173`
-   - `http://localhost:5173/auth`
-8. For production, add your real domain to Site URL and Redirect URLs.
-
-The frontend key is allowed to be public. The database is protected by Row Level Security, so users can only read, insert, update, and delete their own audit rows.
-</file>
-
-<file path="supabase/migrations/001_initial_security.sql">
--- BidSwift AI Supabase schema
--- Run this in the Supabase SQL editor or through the Supabase CLI.
-
-create extension if not exists pgcrypto;
-
-create table if not exists public.profiles (
-  id uuid primary key references auth.users(id) on delete cascade,
-  email text not null,
-  created_at timestamptz not null default now(),
-  updated_at timestamptz not null default now()
-);
-
-create table if not exists public.audits (
-  id uuid primary key default gen_random_uuid(),
-  user_id uuid not null references auth.users(id) on delete cascade,
-  project_name text not null check (char_length(trim(project_name)) between 1 and 200),
-  file_name text,
-  contract_value numeric(18, 2) not null default 0 check (contract_value >= 0),
-  target_margin numeric(6, 2) not null default 0 check (target_margin >= 0 and target_margin <= 100),
-  risk_score integer check (risk_score is null or (risk_score >= 0 and risk_score <= 100)),
-  status text not null default 'completed' check (status in ('draft', 'running', 'completed', 'failed')),
-  analysis jsonb not null default '{}'::jsonb,
-  created_at timestamptz not null default now(),
-  updated_at timestamptz not null default now()
-);
-
-create index if not exists audits_user_created_idx on public.audits (user_id, created_at desc);
-create index if not exists audits_analysis_gin_idx on public.audits using gin (analysis);
-
-alter table public.profiles enable row level security;
-alter table public.profiles force row level security;
-alter table public.audits enable row level security;
-alter table public.audits force row level security;
-
-grant usage on schema public to anon, authenticated;
-grant select, insert, update on public.profiles to authenticated;
-grant select, insert, update, delete on public.audits to authenticated;
-
-drop policy if exists "profiles_select_own" on public.profiles;
-create policy "profiles_select_own"
-  on public.profiles
-  for select
-  to authenticated
-  using ((select auth.uid()) is not null and (select auth.uid()) = id);
-
-drop policy if exists "profiles_update_own" on public.profiles;
-create policy "profiles_update_own"
-  on public.profiles
-  for update
-  to authenticated
-  using ((select auth.uid()) is not null and (select auth.uid()) = id)
-  with check ((select auth.uid()) is not null and (select auth.uid()) = id);
-
-drop policy if exists "audits_select_own" on public.audits;
-create policy "audits_select_own"
-  on public.audits
-  for select
-  to authenticated
-  using ((select auth.uid()) is not null and (select auth.uid()) = user_id);
-
-drop policy if exists "audits_insert_own" on public.audits;
-create policy "audits_insert_own"
-  on public.audits
-  for insert
-  to authenticated
-  with check ((select auth.uid()) is not null and (select auth.uid()) = user_id);
-
-drop policy if exists "audits_update_own" on public.audits;
-create policy "audits_update_own"
-  on public.audits
-  for update
-  to authenticated
-  using ((select auth.uid()) is not null and (select auth.uid()) = user_id)
-  with check ((select auth.uid()) is not null and (select auth.uid()) = user_id);
-
-drop policy if exists "audits_delete_own" on public.audits;
-create policy "audits_delete_own"
-  on public.audits
-  for delete
-  to authenticated
-  using ((select auth.uid()) is not null and (select auth.uid()) = user_id);
-
-create or replace function public.set_updated_at()
-returns trigger
-language plpgsql
-set search_path = public
-as $$
-begin
-  new.updated_at = now();
-  return new;
-end;
-$$;
-
-drop trigger if exists profiles_set_updated_at on public.profiles;
-create trigger profiles_set_updated_at
-  before update on public.profiles
-  for each row execute function public.set_updated_at();
-
-drop trigger if exists audits_set_updated_at on public.audits;
-create trigger audits_set_updated_at
-  before update on public.audits
-  for each row execute function public.set_updated_at();
-
-create or replace function public.handle_new_user()
-returns trigger
-language plpgsql
-security definer
-set search_path = public
-as $$
-begin
-  insert into public.profiles (id, email)
-  values (new.id, coalesce(new.email, ''))
-  on conflict (id) do update
-    set email = excluded.email,
-        updated_at = now();
-
-  return new;
-end;
-$$;
-
-drop trigger if exists on_auth_user_created on auth.users;
-create trigger on_auth_user_created
-  after insert on auth.users
-  for each row execute function public.handle_new_user();
-</file>
-
-<file path="tsconfig.json">
-{
-  "compilerOptions": {
-    "target": "ES2022",
-    "lib": ["DOM", "DOM.Iterable", "ES2022"],
-    "module": "ESNext",
-    "skipLibCheck": true,
-    "moduleResolution": "bundler",
-    "allowImportingTsExtensions": true,
-    "resolveJsonModule": true,
-    "isolatedModules": true,
-    "noEmit": true,
-    "jsx": "react-jsx",
-    "strict": true,
-    "baseUrl": ".",
-    "paths": {
-      "@/*": ["src/*"]
-    }
-  },
-  "include": ["src"]
-}
-</file>
-
-<file path="vite.config.ts">
-import path from "node:path";
-import { pathToFileURL } from "node:url";
-import tailwindcss from "@tailwindcss/vite";
-import { tanstackRouter } from "@tanstack/router-plugin/vite";
-import react from "@vitejs/plugin-react";
-import { defineConfig, loadEnv, type Plugin } from "vite";
-
-// Runs your Vercel-style /api/*.js serverless functions locally under plain
-// `vite dev`, so the Vercel CLI is not required for local development.
-// Each file in /api must default-export a (req, res) => {} handler — same
-// shape Vercel expects, so this file also works unmodified when deployed.
-function localApiPlugin(): Plugin {
-  return {
-    name: "local-api",
-    configureServer(server) {
-      server.middlewares.use(async (req, res, next) => {
-        if (!req.url || !req.url.startsWith("/api/")) return next();
-
-        const fnName = req.url.split("?")[0].replace("/api/", "");
-        const filePath = path.resolve(__dirname, "api", `${fnName}.js`);
-
-        try {
-          // Vercel parses the JSON body for you; plain Node/Vite middleware
-          // does not, so do it ourselves.
-          const chunks: Buffer[] = [];
-          for await (const chunk of req) chunks.push(chunk as Buffer);
-          const raw = Buffer.concat(chunks).toString("utf-8");
-          (req as any).body = raw ? JSON.parse(raw) : {};
-
-          // Vercel's `res` adds .status()/.json() helpers on top of Node's
-          // ServerResponse — polyfill just those two.
-          (res as any).status = (code: number) => {
-            res.statusCode = code;
-            return res;
-          };
-          (res as any).json = (payload: unknown) => {
-            res.setHeader("Content-Type", "application/json");
-            res.end(JSON.stringify(payload));
-          };
-
-          // file:// URL + cache-busting query so edits to /api files are
-          // picked up without restarting the dev server, and so it resolves
-          // correctly on Windows (a raw absolute path is not a valid ESM
-          // specifier there).
-          const fileUrl = `${pathToFileURL(filePath).href}?t=${Date.now()}`;
-          const mod = await import(fileUrl);
-          await mod.default(req, res);
-        } catch (err) {
-          console.error(`[local-api] ${fnName} failed:`, err);
-          if (!res.headersSent) {
-            res.statusCode = 500;
-            res.setHeader("Content-Type", "application/json");
-          }
-          res.end(JSON.stringify({ error: "Local API handler crashed. Check the terminal." }));
-        }
-      });
-    },
-  };
-}
-
-export default defineConfig(({ mode }) => {
-  // Vite only loads VITE_-prefixed vars into import.meta.env by default.
-  // The /api functions need the server-side-only vars too (GROQ_API_KEY,
-  // SUPABASE_SERVICE_ROLE_KEY) — loadEnv with an empty prefix pulls in
-  // everything from .env, and we copy it onto process.env so the
-  // dynamically imported handlers above can read it via process.env.X.
-  const env = loadEnv(mode, process.cwd(), "");
-  Object.assign(process.env, env);
-
-  return {
-    plugins: [
-      tanstackRouter({
-        target: "react",
-        routesDirectory: "./src/routes",
-        generatedRouteTree: "./src/routeTree.gen.ts",
-        quoteStyle: "double",
-        semicolons: true,
-      }),
-      react(),
-      tailwindcss(),
-      localApiPlugin(),
-    ],
-    resolve: {
-      alias: {
-        "@": path.resolve(__dirname, "./src"),
-      },
-    },
-    build: {
-      rollupOptions: {
-        output: {
-          manualChunks: {
-            charts: ["recharts"],
-            excel: ["xlsx"],
-            supabase: ["@supabase/supabase-js"],
-            vendor: ["react", "react-dom", "@tanstack/react-router"],
-          },
-        },
-      },
-    },
-  };
-});
-</file>
-
-<file path="index.html">
-<!DOCTYPE html>
-<html lang="en">
-  <head>
-    <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <link rel="icon" type="image/png" href="/logo.png" />
-    <title>BidSwift AI | Bid Intelligence</title>
-  </head>
-  <body>
-    <div id="root"></div>
-    <script type="module" src="/src/main.tsx"></script>
-  </body>
-</html>
-</file>
-
-<file path="src/components/AppShell.tsx">
-import { Link, useRouter } from "@tanstack/react-router";
-import {
-  LayoutGrid,
-  FileSearch,
-  History,
-  LogOut,
-  Rss,
-  Bell,
-  Settings,
-} from "lucide-react";
-import { supabase } from "@/integrations/supabase/client";
-import type { ReactNode } from "react";
-
-// Standard import
-import logo from "../assets/logo.png";
-
-const navItems = [
-  { to: "/dashboard", label: "Dashboard", icon: LayoutGrid },
-  { to: "/audit", label: "Bid Audit", icon: FileSearch },
-  { to: "/tender-feed", label: "Live Tenders", icon: Rss },
-  { to: "/history", label: "History Log", icon: History },
-] as const;
-
-export function AppShell({ children, userEmail }: { children: ReactNode; userEmail?: string | null }) {
-  const router = useRouter();
-
-  const signOut = async () => {
-    await supabase.auth.signOut();
-    router.navigate({ to: "/auth", replace: true });
-  };
-
-  return (
-    <div className="min-h-screen flex bg-[#fcfcfc]">
-      {/* SIDEBAR - INDUSTRIAL SPEC */}
-      <aside
-        className="w-[280px] bg-white border-r border-slate-200 fixed inset-y-0 z-40 hidden md:flex flex-col"
-      >
-        {/* MASSIVE BRAND AREA */}
-        <div style={{ padding: "3.5rem 2rem" }} className="border-b border-slate-100 bg-[#FCFCFD]">
-          <Link to="/" style={{ display: "block", textDecoration: "none" }}>
-            <img 
-              src={logo} 
-              alt="BidSwift AI" 
-              style={{ 
-                width: "100%", 
-                height: "auto", 
-                maxWidth: "220px", // Scaled to fill sidebar width
-                display: "block",
-                filter: "contrast(1.1) brightness(1.02)", // Match login page clarity
-                margin: "0 auto"
-              }} 
-            />
-          </Link>
-        </div>
-
-        {/* NAVIGATION */}
-        <nav className="flex-1 p-6 space-y-2">
-          <div className="text-[10px] font-black text-slate-300 uppercase tracking-[0.25em] mb-6 px-4">
-            System Core
-          </div>
-          {navItems.map(({ to, label, icon: Icon }) => (
-            <Link
-              key={to}
-              to={to}
-              activeProps={{ className: "bg-slate-900 text-white shadow-xl translate-x-1" }}
-              inactiveProps={{ className: "text-slate-500 hover:bg-slate-50" }}
-              className="flex items-center gap-4 px-5 py-4 rounded-lg text-[11px] font-black uppercase tracking-[0.15em] no-underline transition-all duration-200"
-            >
-              <Icon size={16} />
-              {label}
-            </Link>
-          ))}
-        </nav>
-
-        {/* SIDEBAR FOOTER */}
-        <div className="p-8 border-t border-slate-100 bg-slate-50/50">
-          <div className="px-4 mb-6">
-            <p className="text-[9px] font-black text-slate-400 uppercase tracking-widest mb-1">
-              Active Operator
-            </p>
-            <p className="text-[11px] font-bold text-slate-900 truncate">
-              {userEmail}
-            </p>
-          </div>
-          <button 
-            onClick={signOut} 
-            className="flex items-center gap-3 w-full px-4 py-3 text-[11px] font-black uppercase text-red-500 hover:text-red-700 transition-colors bg-transparent border-none cursor-pointer"
-          >
-            <LogOut size={16} /> Terminate
-          </button>
-        </div>
-      </aside>
-
-      {/* MAIN VIEWPORT */}
-      <div className="flex-1 md:ml-[280px] flex flex-col min-h-screen">
-        {/* CLEAN ENGINEERING HEADER */}
-        <header className="h-20 bg-white border-b border-slate-200 flex items-center justify-between px-12 sticky top-0 z-30">
-          <div className="flex items-center gap-2">
-            <div className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></div>
-            <div className="text-[10px] font-black text-slate-400 uppercase tracking-[0.2em]">
-              System Status: <span className="text-emerald-600">Operational</span>
-            </div>
-          </div>
-          
-          <div className="flex items-center gap-8">
-            <div className="flex gap-4">
-              <button className="text-slate-300 hover:text-slate-900 transition-colors"><Bell size={18}/></button>
-              <button className="text-slate-300 hover:text-slate-900 transition-colors"><Settings size={18}/></button>
-            </div>
-            <div className="h-10 w-[1px] bg-slate-200"></div>
-            <div className="flex items-center gap-4">
-               <span className="text-[10px] font-black text-slate-400 uppercase tracking-widest hidden lg:block">Command Center</span>
-               <div className="w-10 h-10 bg-slate-900 rounded-full flex items-center justify-center text-[11px] font-black text-white uppercase shadow-lg border-2 border-white">
-                {userEmail?.charAt(0) || 'U'}
-              </div>
-            </div>
-          </div>
-        </header>
-
-        {/* CONTENT */}
-        <main className="p-12 w-full max-w-[1600px] mx-auto">
-          {children}
-        </main>
-      </div>
-    </div>
-  );
-}
-</file>
-
-<file path="src/integrations/supabase/audits.ts">
-import { useCallback, useEffect, useState } from "react";
-import { supabase } from "./client";
-
-export type AuditRow = {
-  id: string;
-  user_id: string;
-  project_name: string;
-  file_name: string | null;
-  contract_value: number;
-  target_margin: number;
-  risk_score: number | null;
-  status: string;
-  analysis: any;
-  created_at: string;
-};
-
-export async function fetchAudits(): Promise<AuditRow[]> {
-  const { data: { user } } = await supabase.auth.getUser();
-  if (!user) return [];
-
-  const { data, error } = await supabase
-    .from("audits")
-    .select("*")
-    .eq("user_id", user.id)
-    .order("created_at", { ascending: false });
-
-  if (error) throw error;
-  return (data as AuditRow[]) || [];
-}
-
-export async function insertAudit(audit: Omit<AuditRow, "id" | "created_at">) {
-  const { data, error } = await supabase
-    .from("audits")
-    .insert([audit])
-    .select()
-    .single();
-    
-  if (error) throw error;
-  return data as AuditRow;
-}
-
-export async function deleteAudit(id: string) {
-  const { error } = await supabase
-    .from("audits")
-    .delete()
-    .eq("id", id);
-    
-  if (error) throw error;
-  return true;
-}
-
-export function useAudits() {
-  const [audits, setAudits] = useState<AuditRow[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
-
-  const load = useCallback(async () => {
-    try {
-      const data = await fetchAudits();
-      setAudits(data);
-      setError(null);
-    } catch (err: any) {
-      setError(err.message);
-    } finally {
-      setLoading(false);
-    }
-  }, []);
-
-  useEffect(() => {
-    load();
-
-    // Enable auto-refresh on any DB change
-    const channel = supabase
-      .channel('db-changes')
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'audits' }, () => {
-        load();
-      })
-      .subscribe();
-
-    return () => {
-      supabase.removeChannel(channel);
-    };
-  }, [load]);
-
-  return { audits, loading, error, reload: load };
-}
-
-export function dispatchAuditsUpdated() {
-  window.dispatchEvent(new Event("bidswift:audits-updated"));
-}
-</file>
-
 <file path="src/routes/_authenticated/dashboard.tsx">
 import { createFileRoute, Link } from "@tanstack/react-router";
 import { useAudits } from "@/integrations/supabase/audits";
@@ -3908,111 +4013,6 @@ function Dashboard() {
             )}
           </div>
 
-        </div>
-      </div>
-    </div>
-  );
-}
-</file>
-
-<file path="src/routes/auth.tsx">
-import { createFileRoute, useRouter } from "@tanstack/react-router";
-import { useState } from "react";
-import { supabase } from "@/integrations/supabase/client";
-import { ArrowRight, Loader2, Lock, Mail } from "lucide-react";
-import logo from "../assets/logo.png";
-
-export const Route = createFileRoute("/auth")({
-  component: AuthPage,
-});
-
-function AuthPage() {
-  const router = useRouter();
-  const [mode, setMode] = useState<"signin" | "signup">("signin");
-  const [email, setEmail] = useState("");
-  const [password, setPassword] = useState("");
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-
-  const submit = async (e: React.FormEvent) => {
-    e.preventDefault();
-    setError(null);
-    setLoading(true);
-    try {
-      if (mode === "signup") {
-        const { error } = await supabase.auth.signUp({ email, password });
-        if (error) throw error;
-        alert("Check your email.");
-      } else {
-        const { error } = await supabase.auth.signInWithPassword({ email, password });
-        if (error) throw error;
-        router.navigate({ to: "/dashboard" });
-      }
-    } catch (err: any) {
-      setError(err.message);
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  return (
-    <div style={{ minHeight: "100vh", display: "flex", background: "#FFFFFF" }}>
-      {/* MASSIVE BRAND PANEL */}
-      <div className="hidden lg:flex flex-col justify-center items-center w-[600px] bg-[#0F2240] p-20 text-white">
-        <div className="w-full space-y-16">
-          <img 
-            src={logo} 
-            alt="BidSwift AI" 
-            style={{ 
-              width: "100%", 
-              maxWidth: "400px", // MASSIVE SCALE
-              height: "auto", 
-              filter: "brightness(0) invert(1)" 
-            }} 
-          />
-          <div className="space-y-6">
-            <h1 className="text-5xl font-black tracking-tighter uppercase leading-[0.9]">PRECISION <br/>INTELLIGENCE.</h1>
-            <div className="h-1 w-24 bg-blue-500"></div>
-            <p className="text-slate-400 text-sm font-bold uppercase tracking-[0.2em] leading-relaxed max-w-sm">
-              Standardizing Bid Risk for Infrastructure Assets.
-            </p>
-          </div>
-        </div>
-      </div>
-
-      <div className="flex-1 flex items-center justify-center bg-[#fcfcfc] p-8">
-        <div className="w-full max-w-[360px] space-y-12">
-          <div className="space-y-2">
-            <h2 className="text-2xl font-black text-slate-900 uppercase tracking-tighter">System Login</h2>
-            <p className="text-[10px] font-black text-slate-400 uppercase tracking-[0.3em]">Operator Terminal Access</p>
-          </div>
-
-          <form onSubmit={submit} className="space-y-6">
-            <div className="space-group space-y-2">
-              <label className="text-[10px] font-black uppercase text-slate-500 tracking-widest">Email Address</label>
-              <div className="relative">
-                <Mail className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-300" size={16} />
-                <input type="email" className="field-input pl-12 py-4 border-slate-200" value={email} onChange={e => setEmail(e.target.value)} required />
-              </div>
-            </div>
-            <div className="space-group space-y-2">
-              <label className="text-[10px] font-black uppercase text-slate-500 tracking-widest">Security Key</label>
-              <div className="relative">
-                <Lock className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-300" size={16} />
-                <input type="password" className="field-input pl-12 py-4 border-slate-200" value={password} onChange={e => setPassword(e.target.value)} required />
-              </div>
-            </div>
-
-            {error && <div className="p-4 bg-red-50 text-red-700 text-[10px] font-black uppercase border border-red-100">{error}</div>}
-
-            <button disabled={loading} className="w-full bg-slate-900 text-white py-5 font-black text-xs uppercase tracking-[0.3em] hover:bg-black transition-all flex items-center justify-center gap-3">
-              {loading ? <Loader2 className="animate-spin" size={16} /> : <>Initiate Session <ArrowRight size={16}/></>}
-            </button>
-          </form>
-          
-          <button onClick={() => setMode(mode === "signin" ? "signup" : "signin")} className="w-full text-[10px] font-black text-slate-400 uppercase tracking-widest hover:text-blue-600 transition-colors">
-            {mode === "signin" ? "Request Terminal Access" : "Return to Login"}
-          </button>
         </div>
       </div>
     </div>
