@@ -224,9 +224,13 @@
   .data-table thead th.text-right { text-align: right; }
   .data-table tbody tr {
     border-bottom: 1px solid #F3F4F6;
-    transition: background 0.08s ease;
+    transition: background 0.08s ease, transform 0.15s ease, box-shadow 0.15s ease;
   }
-  .data-table tbody tr:hover { background: #FAFBFC; }
+  .data-table tbody tr:hover {
+    background: #FAFBFC;
+    transform: translateY(-1px);
+    box-shadow: 0 2px 8px rgba(15, 34, 64, 0.06);
+  }
   .data-table tbody td {
     padding: 0.75rem 1rem;
     color: #111827;
@@ -378,4 +382,16 @@
     color: #9CA3AF;
   }
   .empty-state p { font-size: 0.875rem; margin-top: 0.5rem; }
+}
+
+@utility label-xs {
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.2em;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .animate-in, .animate-spin { animation: none !important; }
+  .data-table tbody tr:hover { transform: none; box-shadow: none; }
 }
