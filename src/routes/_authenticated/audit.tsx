@@ -540,7 +540,6 @@ function AuditPage() {
     setLoadingStage("Initializing forensic engine...");
 
     try {
-      const apiKey = import.meta.env.VITE_GROQ_API_KEY;
       const fileList = files.map(f => f.name).join(", ") || "No files uploaded (manual entry)";
 
       setLoadingStage("Running deep risk analysis...");
@@ -556,9 +555,10 @@ CRITICAL OUTPUT RULES:
 4. contractual_traps MUST contain 2-4 specific FIDIC clause references with real clause numbers.
 5. Be specific to Ethiopian construction context (use ETB rates, local material names, ERA/EIC references).
 
+**IMPORTANT**: Do NOT include a "risk_score" field in the JSON. We will calculate it separately from the provided data.
+
 Return this exact JSON structure:
 {
-  "risk_score": <integer 0-100>,
   "recommendation": <"PROCEED" | "PROCEED_WITH_CAUTION" | "DECLINE">,
   "executive_summary": <2-3 sentence summary with specific financial observations>,
   "financial_risk_summary": <detailed paragraph on financial exposure and margin sustainability>,
@@ -582,8 +582,7 @@ Return this exact JSON structure:
       "severity": <"CRITICAL" | "HIGH" | "MEDIUM" | "LOW">,
       "description": <specific risk this clause poses in 2-3 sentences>,
       "recommendation": <specific action to mitigate this risk>
-    },
-    ... at least 3 more items
+    }
   ],
   "market_variance": [
     {
@@ -594,8 +593,7 @@ Return this exact JSON structure:
       "variance_pct": <percentage as number, positive = overpriced, negative = underpriced>,
       "unit": <unit of measurement e.g. "m3", "kg", "day">,
       "note": <brief explanation of the variance>
-    },
-    ... at least 4 more items covering labor, concrete, steel, equipment
+    }
   ],
   "scope_gaps": [
     {
@@ -618,39 +616,28 @@ Submitted Documents: ${fileList}
 
 Apply Ethiopian construction market context. Flag FIDIC risks, validate BoQ rates against current Addis Ababa/Ethiopian market rates (2024-2025), and assess methodology for ERA specification compliance. Be specific and actionable.`;
 
-      const res = await fetch("https://api.groq.com/openai/v1/chat/completions", {
+      // Route through our own serverless proxy (api/check-analysis.js)
+      const { data: { session } } = await supabase.auth.getSession();
+      if (!session) throw new Error("You must be signed in to run an audit.");
+
+      const res = await fetch("/api/check-analysis", {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          "Authorization": `Bearer ${apiKey}`
+          "Authorization": `Bearer ${session.access_token}`
         },
-        body: JSON.stringify({
-          model: "llama-3.3-70b-versatile",
-          temperature: 0.15,
-          max_tokens: 4000,
-          response_format: { type: "json_object" },
-          messages: [
-            { role: "system", content: systemPrompt },
-            { role: "user", content: userPrompt }
-          ]
-        })
+        body: JSON.stringify({ systemPrompt, userPrompt })
       });
 
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error?.message || `API Error ${res.status}`);
+      const analysis = await res.json();
+      if (!res.ok) throw new Error(analysis.error || `API Error ${res.status}`);
 
       setLoadingStage("Processing audit findings...");
 
-      let raw = data.choices?.[0]?.message?.content || "{}";
-      raw = raw.replace(/```json/g, "").replace(/```/g, "").trim();
-      const analysis = JSON.parse(raw);
+      // The risk_score is already computed by the backend via calculateRiskScore()
+      const finalScore = analysis.risk_score ?? 50;
 
-      // Normalize risk score
-      let score = Number(analysis.risk_score || 50);
-      if (score > 0 && score < 1) score = score * 100;
-      const finalScore = Math.round(Math.max(0, Math.min(100, score)));
-
-      // Ensure arrays are always arrays
+      // Ensure arrays are always arrays (defensive)
       analysis.contractual_traps = Array.isArray(analysis.contractual_traps) ? analysis.contractual_traps : [];
       analysis.market_variance = Array.isArray(analysis.market_variance) ? analysis.market_variance : [];
       analysis.arithmetic_errors = Array.isArray(analysis.arithmetic_errors) ? analysis.arithmetic_errors : [];

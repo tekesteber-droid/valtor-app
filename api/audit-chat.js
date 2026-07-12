@@ -1,15 +1,15 @@
 // api/audit-chat.js
-import Groq from "groq-sdk";
 import { createClient } from "@supabase/supabase-js";
-
-const groq = new Groq({ apiKey: process.env.GROQ_API_KEY });
 
 const supabaseAdmin = createClient(
   process.env.VITE_SUPABASE_URL,
   process.env.SUPABASE_SERVICE_ROLE_KEY
 );
 
-// Token-budget guards ($0 strategy: hard caps instead of vector search)
+const DEEPSEEK_API_KEY = process.env.DEEPSEEK_API_KEY;
+const DEEPSEEK_API_URL = "https://api.deepseek.com/chat/completions";
+const DEEPSEEK_MODEL = process.env.DEEPSEEK_MODEL || "deepseek-chat";
+
 const MAX_CONTEXT_CHARS = 24000;
 const MAX_HISTORY_MESSAGES = 12;
 const MAX_MESSAGE_CHARS = 2000;
@@ -63,17 +63,30 @@ Rules:
 AUDIT DATA:
 ${context}`;
 
-    const chatCompletion = await groq.chat.completions.create({
-      model: "llama-3.3-70b-versatile",
-      temperature: 0.2,
-      max_tokens: 1024,
-      messages: [{ role: "system", content: systemPrompt }, ...history],
+    const response = await fetch(DEEPSEEK_API_URL, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${DEEPSEEK_API_KEY}`,
+      },
+      body: JSON.stringify({
+        model: DEEPSEEK_MODEL,
+        temperature: 0.2,
+        max_tokens: 1024,
+        messages: [{ role: "system", content: systemPrompt }, ...history],
+      }),
     });
 
-    const reply = chatCompletion.choices[0]?.message?.content?.trim() || "";
+    if (!response.ok) {
+      const errorText = await response.text();
+      throw new Error(`DeepSeek API error (${response.status}): ${errorText}`);
+    }
+
+    const data = await response.json();
+    const reply = data.choices?.[0]?.message?.content?.trim() || "";
     return res.status(200).json({ reply });
   } catch (error) {
-    console.error("Groq Chat Failure:", error);
+    console.error("DeepSeek Chat Failure:", error);
     return res.status(500).json({ error: "Failed to process chat message.", detail: error.message });
   }
 }

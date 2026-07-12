@@ -1,5 +1,11 @@
+// src/routes/index.tsx
 import { createFileRoute, Link } from "@tanstack/react-router";
 import { Cpu, ShieldCheck, BarChart3, Globe, ArrowRight, Activity, AlertTriangle } from "lucide-react";
+import { HeroGrid } from "@/components/HeroGrid";
+import { lazy, Suspense } from "react";
+
+// Lazy load the 3D model
+const BimModel3D = lazy(() => import("@/components/BimModel3D"));
 
 export const Route = createFileRoute("/")({
   head: () => ({
@@ -28,7 +34,7 @@ function IconBox({ children }: { children: React.ReactNode }) {
 function Index() {
   return (
     <div className="min-h-screen bg-white text-slate-900 font-sans">
-      {/* NAV */}
+      {/* NAV (unchanged) */}
       <header className="border-b border-slate-200 bg-white">
         <div className="mx-auto flex max-w-7xl items-center justify-between px-6 py-4">
           <div className="flex items-center gap-3">
@@ -62,56 +68,72 @@ function Index() {
 
       {/* HERO */}
       <section className="relative border-b border-slate-200">
-        <div className="absolute inset-0 grid-bg pointer-events-none" />
-        <div className="relative mx-auto max-w-7xl px-6 py-24 md:py-32">
-          <div className="mb-10 flex items-center gap-3">
-            <span className="inline-block h-1.5 w-1.5 bg-indigo-600" />
-            <Label>System Online — Index v1.0.4</Label>
-          </div>
+        <HeroGrid>
+          <div className="relative mx-auto max-w-7xl px-6 py-24 md:py-32">
+            <div className="grid grid-cols-1 items-center gap-16 lg:grid-cols-12">
+              <div className="lg:col-span-7">
+                <div className="mb-10 flex items-center gap-3">
+                  <span className="inline-block h-1.5 w-1.5 bg-indigo-600" />
+                  <Label>System Online — Index v1.0.4</Label>
+                </div>
 
-          <h1 className="max-w-5xl text-5xl font-black uppercase tracking-tighter leading-[0.95] text-slate-900 md:text-7xl lg:text-[88px]">
-            Bid the right<br />tenders.<br />
-            <span className="text-slate-400">Skip the rest.</span>
-          </h1>
+                <h1 className="max-w-5xl text-5xl font-black uppercase tracking-tighter leading-[0.95] text-slate-900 md:text-7xl lg:text-[88px]">
+                  Bid the right<br />tenders.<br />
+                  <span className="text-slate-400">Skip the rest.</span>
+                </h1>
 
-          <p className="mt-10 max-w-xl text-base leading-relaxed text-slate-600 md:text-lg">
-            BidSwift AI turns raw tender documents into board-ready risk
-            registers, Go/No-Go recommendations, and structured bills of
-            quantities — before your estimators spend a single day pricing.
-          </p>
+                <p className="mt-10 max-w-xl text-base leading-relaxed text-slate-600 md:text-lg">
+                  BidSwift AI turns raw tender documents into board-ready risk
+                  registers, Go/No-Go recommendations, and structured bills of
+                  quantities — before your estimators spend a single day pricing.
+                </p>
 
-          <div className="mt-12 flex flex-wrap items-center gap-3">
-            <Link
-              to="/auth"
-              className="label-xs flex items-center gap-3 border border-slate-900 bg-slate-900 px-6 py-4 text-white transition-colors hover:border-indigo-600 hover:bg-indigo-600"
-            >
-              Run a tender assessment
-              <ArrowRight className="h-3.5 w-3.5" strokeWidth={2.5} />
-            </Link>
-            <button className="label-xs border border-slate-200 bg-white px-6 py-4 text-slate-900 transition-colors hover:border-slate-900">
-              View Technical Brief
-            </button>
-          </div>
+                <div className="mt-12 flex flex-wrap items-center gap-3">
+                  <Link
+                    to="/auth"
+                    className="label-xs flex items-center gap-3 border border-slate-900 bg-slate-900 px-6 py-4 text-white transition-colors hover:border-indigo-600 hover:bg-indigo-600"
+                  >
+                    Run a tender assessment
+                    <ArrowRight className="h-3.5 w-3.5" strokeWidth={2.5} />
+                  </Link>
+                  <button className="label-xs border border-slate-200 bg-white px-6 py-4 text-slate-900 transition-colors hover:border-slate-900">
+                    View Technical Brief
+                  </button>
+                </div>
 
-          {/* spec strip */}
-          <div className="mt-20 grid grid-cols-2 gap-px border border-slate-200 bg-slate-200 md:grid-cols-4">
-            {[
-              ["Tender Volume", "$12.4B"],
-              ["Active Pipelines", "184"],
-              ["Risk Models", "27"],
-              ["Latency", "1.2s"],
-            ].map(([k, v]) => (
-              <div key={k} className="bg-white px-5 py-5">
-                <Label>{k}</Label>
-                <div className="mt-2 font-mono text-2xl font-bold tracking-tight text-slate-900">
-                  {v}
+                {/* spec strip */}
+                <div className="mt-20 grid grid-cols-2 gap-px border border-slate-200 bg-slate-200 md:grid-cols-4">
+                  {[
+                    ["Tender Volume", "$12.4B"],
+                    ["Active Pipelines", "184"],
+                    ["Risk Models", "27"],
+                    ["Latency", "1.2s"],
+                  ].map(([k, v]) => (
+                    <div key={k} className="bg-white px-5 py-5">
+                      <Label>{k}</Label>
+                      <div className="mt-2 font-mono text-2xl font-bold tracking-tight text-slate-900">
+                        {v}
+                      </div>
+                    </div>
+                  ))}
                 </div>
               </div>
-            ))}
+
+              <div className="lg:col-span-5 h-full min-h-[500px] relative">
+                <Suspense fallback={
+                  <div className="w-full h-full bg-slate-100 animate-pulse flex items-center justify-center">
+                    <div className="w-12 h-12 border-2 border-slate-300 border-t-slate-900 rounded-full animate-spin" />
+                  </div>
+                }>
+                  <BimModel3D />
+                </Suspense>
+              </div>
+            </div>
           </div>
-        </div>
+        </HeroGrid>
       </section>
 
+      {/* The rest of your index page remains unchanged */}
       {/* NEURAL ENGINE */}
       <section className="border-b border-slate-200">
         <div className="mx-auto max-w-7xl px-6 py-24">

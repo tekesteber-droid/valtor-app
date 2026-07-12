@@ -103,6 +103,13 @@
 }
 
 @layer components {
+  /* ── Drafting grid (hero background) ───────────────────────────────── */
+  .grid-bg {
+    background-image:
+      repeating-linear-gradient(0deg, rgba(15, 23, 42, 0.06) 0px, rgba(15, 23, 42, 0.06) 1px, transparent 1px, transparent 40px),
+      repeating-linear-gradient(90deg, rgba(15, 23, 42, 0.06) 0px, rgba(15, 23, 42, 0.06) 1px, transparent 1px, transparent 40px);
+  }
+
   /* ── Core panel ─────────────────────────────────────────────────────── */
   .panel {
     background: #FFFFFF;
@@ -394,4 +401,53 @@
 @media (prefers-reduced-motion: reduce) {
   .animate-in, .animate-spin { animation: none !important; }
   .data-table tbody tr:hover { transform: none; box-shadow: none; }
+}
+
+/* ── 3D Annotations ────────────────────────────────────────────────────────── */
+.annotation-badge {
+  background: rgba(255, 255, 255, 0.92);
+  backdrop-filter: blur(8px);
+  padding: 4px 12px;
+  border-radius: 4px;
+  border: 1px solid rgba(15, 34, 64, 0.15);
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: #1E293B;
+  white-space: nowrap;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.08);
+  transition: transform 0.2s ease, box-shadow 0.2s ease;
+  pointer-events: none;
+  user-select: none;
+}
+
+.annotation-badge.flag {
+  background: rgba(245, 158, 11, 0.12);
+  border-color: rgba(245, 158, 11, 0.3);
+  color: #B45309;
+}
+
+.annotation-badge .dot {
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #F59E0B;
+  margin-right: 6px;
+  animation: pulse-dot 1.5s ease-in-out infinite;
+}
+
+.annotation-badge.pulse {
+  animation: glow-pulse 2s ease-in-out infinite;
+}
+
+@keyframes pulse-dot {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50% { opacity: 0.3; transform: scale(0.6); }
+}
+
+@keyframes glow-pulse {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(79, 70, 229, 0.1); }
+  50% { box-shadow: 0 0 20px 4px rgba(79, 70, 229, 0.2); }
 }

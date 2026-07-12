@@ -1,6 +1,7 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { useEffect, useRef, useState } from "react";
 import { deleteAudit, useAudits } from "@/integrations/supabase/audits";
+import { riskClass } from "@/components/RiskUtils";
 import {
   Trash2,
   FileText,
@@ -9,9 +10,10 @@ import {
   Clock,
   History,
 } from "lucide-react";
+import { motion, AnimatePresence, AnimatedScore } from "@/components/motion";
 
 export const Route = createFileRoute("/_authenticated/history")({
-  head: () => ({ meta: [{ title: "Audit History — BidSwift AI" }] }),
+  head: () => ({ meta: [{ title: "Audit History — Valtor" }] }),
   component: HistoryPage,
 });
 
@@ -41,13 +43,6 @@ function recBadge(rec?: string) {
   if (rec === "PROCEED") return <span className="badge badge-green">Proceed</span>;
   if (rec === "DECLINE") return <span className="badge badge-red">Decline</span>;
   return <span className="badge badge-amber">Caution</span>;
-}
-
-function riskClass(score: number | null) {
-  if (score === null) return "";
-  if (score < 35) return "risk-low";
-  if (score < 65) return "risk-medium";
-  return "risk-high";
 }
 
 // Minimal custom dropdown for the actions menu (no Radix dep needed)
@@ -179,8 +174,14 @@ function HistoryPage() {
                 </tr>
               </thead>
               <tbody>
+                <AnimatePresence initial={false}>
                 {audits.map((r) => (
-                  <tr
+                  <motion.tr
+                    layout
+                    initial={{ opacity: 0 }}
+                    animate={{ opacity: 1 }}
+                    exit={{ opacity: 0, x: -12 }}
+                    transition={{ duration: 0.22 }}
                     key={r.id}
                     style={{ cursor: "pointer" }}
                     onClick={() => setSelected(r)}
@@ -219,8 +220,9 @@ function HistoryPage() {
                         </button>
                       </div>
                     </td>
-                  </tr>
+                  </motion.tr>
                 ))}
+                </AnimatePresence>
               </tbody>
             </table>
           </div>
@@ -229,7 +231,8 @@ function HistoryPage() {
 
       {/* Detail modal */}
       {selected && (
-        <div
+        <motion.div
+          initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={{ duration: 0.18 }}
           style={{
             position: "fixed", inset: 0, zIndex: 200,
             display: "flex", alignItems: "center", justifyContent: "center",
@@ -238,7 +241,10 @@ function HistoryPage() {
           }}
           onClick={() => setSelected(null)}
         >
-          <div
+          <motion.div
+            initial={{ opacity: 0, scale: 0.96, y: 12 }}
+            animate={{ opacity: 1, scale: 1, y: 0 }}
+            transition={{ type: "spring", stiffness: 320, damping: 26 }}
             className="panel"
             style={{ maxWidth: "680px", width: "100%", maxHeight: "85vh", overflowY: "auto", padding: "1.75rem" }}
             onClick={(e) => e.stopPropagation()}
@@ -265,7 +271,9 @@ function HistoryPage() {
               ].map(({ label, value }) => (
                 <div key={label} className="stat-card" style={{ padding: "0.875rem" }}>
                   <div className="stat-label">{label}</div>
-                  <div style={{ fontSize: "1.125rem", fontWeight: 700, color: "#0D1117" }}>{value}</div>
+                  {label === "Risk Score" && selected.risk_score != null
+                    ? <AnimatedScore value={Math.round(Number(selected.risk_score))} suffix={<span style={{ fontSize: "0.75rem", color: "#9CA3AF" }}>/100</span>} color="#0D1117" fontSize="1.125rem" />
+                    : <div style={{ fontSize: "1.125rem", fontWeight: 700, color: "#0D1117" }}>{value}</div>}
                 </div>
               ))}
             </div>
@@ -292,8 +300,8 @@ function HistoryPage() {
                 {JSON.stringify(selected.analysis, null, 2)}
               </pre>
             </details>
-          </div>
-        </div>
+          </motion.div>
+        </motion.div>
       )}
     </div>
   );
