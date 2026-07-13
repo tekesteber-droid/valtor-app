@@ -9,8 +9,8 @@
     "preview": "vite preview"
   },
   "dependencies": {
-    "@react-three/drei": "^9.107.0",
-    "@react-three/fiber": "^8.16.4",
+    "@react-three/drei": "^9.122.0",
+    "@react-three/fiber": "^8.18.0",
     "@react-three/postprocessing": "^2.16.0",
     "@supabase/supabase-js": "^2.89.0",
     "@tanstack/react-router": "^1.170.15",
