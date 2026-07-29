@@ -47,14 +47,43 @@ type ContractualTrap = {
   recommendation: string;
 };
 
+type Confidence = "High" | "Medium" | "Low" | "Unknown";
+
 type MarketVarianceItem = {
   item: string;
+  item_no?: string | null;
   category: string;
-  our_rate: number;
-  market_rate: number;
-  variance_pct: number;
+  our_rate: number | null;
+  market_rate: number | null;
+  variance_pct: number | null;
   unit: string;
   note: string;
+  confidence?: Confidence;
+  match_type?: string;
+  recommendation?: string;
+  source?: string;
+};
+
+// A BOQ line item as entered/extracted on the client, sent to the backend
+// so the deterministic pricing engine can look it up against the official
+// price book. tender_price is the bidder's own rate for that line item.
+type BoqLineItem = {
+  item_no?: string;
+  description: string;
+  unit: string;
+  qty?: number;
+  tender_price?: number;
+};
+
+type PricingReference = {
+  source_document: string;
+  issuer: string | null;
+  publication_period: string;
+  publication_date: string | null;
+  price_type: string;
+  coverage: string;
+  currency: string;
+  disclaimer: string;
 };
 
 type ArithmeticError = {
@@ -80,6 +109,7 @@ type AuditResult = {
   arithmetic_errors: ArithmeticError[];
   contractual_traps: ContractualTrap[];
   market_variance: MarketVarianceItem[];
+  pricing_reference?: PricingReference;
   scope_gaps: ScopeGap[];
   resource_gap_analysis: string;
   plant_adequacy_assessment: string;
@@ -104,6 +134,13 @@ function severityColor(s: string) {
   if (s === "HIGH") return "bg-orange-100 text-orange-800 border-orange-200";
   if (s === "MEDIUM") return "bg-amber-100 text-amber-800 border-amber-200";
   return "bg-slate-100 text-slate-700 border-slate-200";
+}
+
+function confidenceColor(c?: string) {
+  if (c === "High") return "bg-emerald-100 text-emerald-800 border-emerald-200";
+  if (c === "Medium") return "bg-amber-100 text-amber-800 border-amber-200";
+  if (c === "Low") return "bg-orange-100 text-orange-800 border-orange-200";
+  return "bg-slate-100 text-slate-500 border-slate-200"; // Unknown
 }
 
 function RecBadge({ rec }: { rec?: string }) {
@@ -420,27 +457,40 @@ function ResultsPanel({ result, onReset }: { result: AuditResult; onReset: () =>
             </div>
           ) : (
             <div>
-              <p className="text-[11px] text-slate-500 mb-4">
-                Comparison of bid rates against current Ethiopian construction market benchmarks. Variances &gt;±10% flagged for review.
+              <p className="text-[11px] text-slate-500 mb-3">
+                Bid rates compared against the official Addis Ababa Construction Works price book. This is a
+                deterministic, evidence-backed lookup — not an AI estimate. Variances &gt;±10% flagged for review.
               </p>
+
+              {result.pricing_reference && (
+                <div className="bg-slate-50 border border-slate-200 rounded p-3 mb-4">
+                  <p className="text-[10px] font-black uppercase tracking-widest text-slate-500 mb-1">Pricing Reference Notice</p>
+                  <p className="text-[10px] text-slate-500 leading-relaxed">{result.pricing_reference.disclaimer}</p>
+                  <p className="text-[10px] text-slate-400 mt-2">
+                    Source: {result.pricing_reference.source_document}
+                    {result.pricing_reference.publication_period ? ` · ${result.pricing_reference.publication_period}` : ""}
+                    {" · "}{result.pricing_reference.price_type} · Coverage: {result.pricing_reference.coverage}
+                  </p>
+                </div>
+              )}
 
               <div className="grid grid-cols-3 gap-3 mb-4">
                 <div className="bg-red-50 border border-red-100 rounded p-3 text-center">
                   <p className="text-[10px] font-black text-red-700 uppercase">Overpriced Items</p>
                   <p className="text-2xl font-black text-red-600">
-                    {result.market_variance.filter(m => m.variance_pct > 10).length}
+                    {result.market_variance.filter(m => (m.variance_pct ?? 0) > 10).length}
                   </p>
                 </div>
                 <div className="bg-slate-50 border border-slate-200 rounded p-3 text-center">
                   <p className="text-[10px] font-black text-slate-500 uppercase">Within Range</p>
                   <p className="text-2xl font-black text-slate-700">
-                    {result.market_variance.filter(m => Math.abs(m.variance_pct) <= 10).length}
+                    {result.market_variance.filter(m => m.variance_pct != null && Math.abs(m.variance_pct) <= 10).length}
                   </p>
                 </div>
                 <div className="bg-emerald-50 border border-emerald-100 rounded p-3 text-center">
                   <p className="text-[10px] font-black text-emerald-700 uppercase">Underpriced Items</p>
                   <p className="text-2xl font-black text-emerald-600">
-                    {result.market_variance.filter(m => m.variance_pct < -10).length}
+                    {result.market_variance.filter(m => (m.variance_pct ?? 0) < -10).length}
                   </p>
                 </div>
               </div>
@@ -450,40 +500,57 @@ function ResultsPanel({ result, onReset }: { result: AuditResult; onReset: () =>
                   <thead>
                     <tr className="bg-slate-50 border-b border-slate-200">
                       <th className="text-left px-4 py-2.5 font-black text-slate-500 uppercase text-[9px] tracking-widest">Item</th>
-                      <th className="text-left px-4 py-2.5 font-black text-slate-500 uppercase text-[9px] tracking-widest">Category</th>
+                      <th className="text-left px-4 py-2.5 font-black text-slate-500 uppercase text-[9px] tracking-widest">Confidence</th>
                       <th className="text-right px-4 py-2.5 font-black text-slate-500 uppercase text-[9px] tracking-widest">Bid Rate</th>
-                      <th className="text-right px-4 py-2.5 font-black text-slate-500 uppercase text-[9px] tracking-widest">Market Rate</th>
+                      <th className="text-right px-4 py-2.5 font-black text-slate-500 uppercase text-[9px] tracking-widest">Reference Rate</th>
                       <th className="text-right px-4 py-2.5 font-black text-slate-500 uppercase text-[9px] tracking-widest">Variance</th>
                     </tr>
                   </thead>
                   <tbody>
                     {result.market_variance.map((m, i) => {
-                      const isOver = m.variance_pct > 10;
-                      const isUnder = m.variance_pct < -10;
+                      const unmatched = m.confidence === "Unknown" || m.market_rate == null;
+                      const isOver = (m.variance_pct ?? 0) > 10;
+                      const isUnder = (m.variance_pct ?? 0) < -10;
                       const urgent = isOver;
                       return (
                         <motion.tr key={i}
                           initial={reduced ? false : urgent ? { opacity: 0, x: -16, backgroundColor: "rgba(254,242,242,1)" } : { opacity: 0, y: 8 }}
                           animate={reduced ? {} : urgent ? { opacity: 1, x: 0, backgroundColor: "rgba(254,242,242,0)" } : { opacity: 1, y: 0 }}
                           transition={urgent ? { type: "spring", stiffness: 520, damping: 26, backgroundColor: { duration: 1.4 }, delay: 0.1 + i * 0.12 } : { duration: 0.3, delay: 0.1 + i * 0.12 }}
-                          className={`border-b border-slate-100 last:border-0 ${isOver ? "bg-red-50/30" : isUnder ? "bg-emerald-50/30" : ""}`}
+                          className={`border-b border-slate-100 last:border-0 ${unmatched ? "bg-slate-50/50" : isOver ? "bg-red-50/30" : isUnder ? "bg-emerald-50/30" : ""}`}
                         >
-                          <td className="px-4 py-3 font-bold text-slate-800">{m.item}</td>
-                          <td className="px-4 py-3 text-slate-500">{m.category}</td>
+                          <td className="px-4 py-3 font-bold text-slate-800">
+                            {m.item}
+                            {m.category && <span className="block text-[10px] font-normal text-slate-400">{m.category}</span>}
+                          </td>
+                          <td className="px-4 py-3">
+                            <span className={`text-[9px] font-black px-2 py-0.5 rounded border uppercase ${confidenceColor(m.confidence)}`}>
+                              {m.confidence || "Unknown"}
+                            </span>
+                            {m.match_type && <span className="block text-[9px] text-slate-400 mt-1">{m.match_type}</span>}
+                          </td>
                           <td className="px-4 py-3 text-right font-mono text-slate-700">
                             {m.our_rate ? `${m.our_rate.toLocaleString()}${m.unit ? ` ETB/${m.unit}` : ""}` : "—"}
                           </td>
                           <td className="px-4 py-3 text-right font-mono text-slate-600">
-                            {m.market_rate ? `${m.market_rate.toLocaleString()}${m.unit ? ` ETB/${m.unit}` : ""}` : "—"}
+                            {unmatched ? (
+                              <span className="text-[10px] font-bold text-slate-400 uppercase">Reference unavailable</span>
+                            ) : (
+                              `${m.market_rate!.toLocaleString()}${m.unit ? ` ETB/${m.unit}` : ""}`
+                            )}
                           </td>
                           <td className="px-4 py-3 text-right">
-                            <div className="flex items-center justify-end gap-1">
-                              <VarianceIcon pct={m.variance_pct} />
-                              <span className={`font-black ${isOver ? "text-red-600" : isUnder ? "text-emerald-600" : "text-slate-600"}`}>
-                                {m.variance_pct > 0 ? "+" : ""}{m.variance_pct}%
-                              </span>
-                            </div>
-                            {m.note && <p className="text-[10px] text-slate-400 mt-0.5 text-left">{m.note}</p>}
+                            {unmatched ? (
+                              <span className="text-slate-300">—</span>
+                            ) : (
+                              <div className="flex items-center justify-end gap-1">
+                                <VarianceIcon pct={m.variance_pct ?? 0} />
+                                <span className={`font-black ${isOver ? "text-red-600" : isUnder ? "text-emerald-600" : "text-slate-600"}`}>
+                                  {(m.variance_pct ?? 0) > 0 ? "+" : ""}{m.variance_pct}%
+                                </span>
+                              </div>
+                            )}
+                            {m.recommendation && <p className="text-[10px] text-slate-400 mt-0.5 text-left">{m.recommendation}</p>}
                           </td>
                         </motion.tr>
                       );
@@ -531,7 +598,64 @@ function AuditPage() {
   const [loadingStage, setLoadingStage] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [result, setResult] = useState<AuditResult | null>(null);
+  const [boqItems, setBoqItems] = useState<BoqLineItem[]>([]);
   const fileInputRef = useRef<HTMLInputElement>(null);
+
+  // Best-effort BOQ extraction from an uploaded .xlsx file: looks for a
+  // sheet with recognizable description/unit/qty/rate columns. This is a
+  // pragmatic v1 — PDF/DOCX BOQs still require manual entry below, since
+  // this app does not currently parse those formats server-side.
+  const extractBoqFromXlsx = async (file: File) => {
+    const XLSX = await import("xlsx");
+    const buf = await file.arrayBuffer();
+    const wb = XLSX.read(buf, { type: "array" });
+    const sheet = wb.Sheets[wb.SheetNames[0]];
+    const rows: Record<string, any>[] = XLSX.utils.sheet_to_json(sheet, { defval: "" });
+    if (!rows.length) return [];
+
+    const headerKeys = Object.keys(rows[0]);
+    const find = (candidates: string[]) =>
+      headerKeys.find(h => candidates.some(c => h.toLowerCase().replace(/[^a-z]/g, "").includes(c)));
+
+    const descKey = find(["description", "item", "particular"]);
+    const unitKey = find(["unit", "uom"]);
+    const qtyKey = find(["qty", "quantity"]);
+    const rateKey = find(["rate", "unitprice", "unitrate", "price"]);
+    const itemNoKey = find(["itemno", "code", "sno"]);
+
+    if (!descKey) return [];
+
+    return rows
+      .map((r): BoqLineItem | null => {
+        const description = String(r[descKey] || "").trim();
+        if (!description) return null;
+        return {
+          item_no: itemNoKey ? String(r[itemNoKey] || "").trim() : undefined,
+          description,
+          unit: unitKey ? String(r[unitKey] || "").trim() : "",
+          qty: qtyKey ? Number(r[qtyKey]) || undefined : undefined,
+          tender_price: rateKey ? Number(r[rateKey]) || undefined : undefined,
+        };
+      })
+      .filter((r): r is BoqLineItem => r !== null);
+  };
+
+  const handleFilesSelected = async (selected: File[]) => {
+    setFiles(selected);
+    const xlsxFiles = selected.filter(f => /\.(xlsx|xls)$/i.test(f.name));
+    if (xlsxFiles.length === 0) return;
+    try {
+      const extracted = (await Promise.all(xlsxFiles.map(extractBoqFromXlsx))).flat();
+      if (extracted.length) setBoqItems(prev => [...prev, ...extracted]);
+    } catch {
+      // Extraction is best-effort — fall back silently to manual BOQ entry.
+    }
+  };
+
+  const addBoqRow = () => setBoqItems(prev => [...prev, { description: "", unit: "", qty: undefined, tender_price: undefined }]);
+  const updateBoqRow = (i: number, patch: Partial<BoqLineItem>) =>
+    setBoqItems(prev => prev.map((row, idx) => (idx === i ? { ...row, ...patch } : row)));
+  const removeBoqRow = (i: number) => setBoqItems(prev => prev.filter((_, idx) => idx !== i));
 
   const runAudit = async () => {
     if (!projectName || !contractValue) return setError("Project name and contract value are required.");
@@ -551,9 +675,15 @@ Your task is to produce a DEEP, COMPREHENSIVE forensic audit. Every section MUST
 CRITICAL OUTPUT RULES:
 1. Return ONLY valid JSON. No markdown, no code fences, no preamble.
 2. Every array must have AT LEAST 2-4 items with realistic, specific data.
-3. market_variance MUST contain 4-6 specific line items with actual ETB rates and percentages.
+3. Do NOT produce a "market_variance" array — verified pricing evidence for this bid's BOQ items will be
+   supplied to you separately, sourced from the official Addis Ababa Construction Works price book. Any
+   market_variance field you output will be discarded and replaced with that verified evidence.
 4. contractual_traps MUST contain 2-4 specific FIDIC clause references with real clause numbers.
 5. Be specific to Ethiopian construction context (use ETB rates, local material names, ERA/EIC references).
+6. The pricing evidence provided is from a quarterly schedule (2018 E.C. 4th Quarter, Direct Cost only).
+   It is a benchmark for consistency checking, not current market pricing. Do not describe it as "current"
+   or "live" — state clearly that it is a reference schedule and users should validate with current
+   supplier quotes before making commercial decisions.
 
 **IMPORTANT**: Do NOT include a "risk_score" field in the JSON. We will calculate it separately from the provided data.
 
@@ -584,17 +714,6 @@ Return this exact JSON structure:
       "recommendation": <specific action to mitigate this risk>
     }
   ],
-  "market_variance": [
-    {
-      "item": <specific material or labor item name>,
-      "category": <"Labor" | "Materials" | "Equipment" | "Subcontract">,
-      "our_rate": <bid rate as number>,
-      "market_rate": <current Ethiopian market rate as number>,
-      "variance_pct": <percentage as number, positive = overpriced, negative = underpriced>,
-      "unit": <unit of measurement e.g. "m3", "kg", "day">,
-      "note": <brief explanation of the variance>
-    }
-  ],
   "scope_gaps": [
     {
       "missing_element": <specific missing scope item>,
@@ -614,7 +733,9 @@ Contract Value: ${contractValue} ETB
 Target Margin: ${targetMargin}%
 Submitted Documents: ${fileList}
 
-Apply Ethiopian construction market context. Flag FIDIC risks, validate BoQ rates against current Addis Ababa/Ethiopian market rates (2024-2025), and assess methodology for ERA specification compliance. Be specific and actionable.`;
+${boqItems.length > 0 ? `${boqItems.length} BOQ line item(s) were submitted with bid rates; verified pricing evidence for these will follow below.` : "No structured BOQ line items were submitted; skip item-level pricing commentary."}
+
+Apply Ethiopian construction market context. Flag FIDIC risks and assess methodology for ERA specification compliance. Be specific and actionable. Do not comment on market pricing beyond the verified evidence provided.`;
 
       // Route through our own serverless proxy (api/check-analysis.js)
       const { data: { session } } = await supabase.auth.getSession();
@@ -626,7 +747,7 @@ Apply Ethiopian construction market context. Flag FIDIC risks, validate BoQ rate
           "Content-Type": "application/json",
           "Authorization": `Bearer ${session.access_token}`
         },
-        body: JSON.stringify({ systemPrompt, userPrompt })
+        body: JSON.stringify({ systemPrompt, userPrompt, boqItems })
       });
 
       const analysis = await res.json();
@@ -689,7 +810,7 @@ Apply Ethiopian construction market context. Flag FIDIC risks, validate BoQ rate
       {result ? (
         <ResultsPanel
           result={result}
-          onReset={() => { setResult(null); setFiles([]); setProjectName(""); setContractValue(""); }}
+          onReset={() => { setResult(null); setFiles([]); setBoqItems([]); setProjectName(""); setContractValue(""); }}
         />
       ) : loading ? (
         <LoadingPanel stage={loadingStage} />
@@ -731,7 +852,7 @@ Apply Ethiopian construction market context. Flag FIDIC risks, validate BoQ rate
                 className="hidden"
                 multiple
                 accept=".pdf,.xlsx,.xls,.docx,.doc"
-                onChange={e => e.target.files && setFiles([...Array.from(e.target.files)])}
+                onChange={e => e.target.files && handleFilesSelected([...Array.from(e.target.files)])}
               />
               <div
                 onClick={() => fileInputRef.current?.click()}
@@ -749,6 +870,54 @@ Apply Ethiopian construction market context. Flag FIDIC risks, validate BoQ rate
                     <div key={i} className="text-[10px] font-bold bg-slate-50 p-2 border rounded flex justify-between items-center">
                       <span className="flex items-center gap-1.5"><FileText size={11} className="text-blue-500" />{f.name}</span>
                       <X size={12} className="cursor-pointer text-slate-400 hover:text-red-500" onClick={() => setFiles(files.filter((_, idx) => idx !== i))} />
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+
+            <div>
+              <div className="flex items-center justify-between mb-1">
+                <label className="section-label m-0">BOQ Line Items (for market rate comparison)</label>
+                <button type="button" onClick={addBoqRow} className="btn-ghost text-[10px]">+ Add item</button>
+              </div>
+              <p className="text-[10px] text-slate-400 mb-2">
+                Uploaded .xlsx BOQs are auto-parsed where possible. Add or edit rows manually — items are matched
+                against the official price book, not estimated by AI.
+              </p>
+              {boqItems.length > 0 && (
+                <div className="space-y-1.5">
+                  {boqItems.map((row, i) => (
+                    <div key={i} className="grid grid-cols-12 gap-1.5 items-center">
+                      <input
+                        className="field-input col-span-5 text-[11px]"
+                        placeholder="Item description"
+                        value={row.description}
+                        onChange={e => updateBoqRow(i, { description: e.target.value })}
+                      />
+                      <input
+                        className="field-input col-span-2 text-[11px]"
+                        placeholder="Unit"
+                        value={row.unit}
+                        onChange={e => updateBoqRow(i, { unit: e.target.value })}
+                      />
+                      <input
+                        type="number"
+                        className="field-input col-span-2 text-[11px]"
+                        placeholder="Qty"
+                        value={row.qty ?? ""}
+                        onChange={e => updateBoqRow(i, { qty: e.target.value ? Number(e.target.value) : undefined })}
+                      />
+                      <input
+                        type="number"
+                        className="field-input col-span-2 text-[11px]"
+                        placeholder="Bid rate"
+                        value={row.tender_price ?? ""}
+                        onChange={e => updateBoqRow(i, { tender_price: e.target.value ? Number(e.target.value) : undefined })}
+                      />
+                      <button type="button" onClick={() => removeBoqRow(i)} className="col-span-1 text-slate-300 hover:text-red-500">
+                        <X size={14} />
+                      </button>
                     </div>
                   ))}
                 </div>
