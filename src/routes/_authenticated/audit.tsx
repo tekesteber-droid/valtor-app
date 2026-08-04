@@ -599,56 +599,123 @@ function AuditPage() {
   const [error, setError] = useState<string | null>(null);
   const [result, setResult] = useState<AuditResult | null>(null);
   const [boqItems, setBoqItems] = useState<BoqLineItem[]>([]);
+  const [boqParseStatus, setBoqParseStatus] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  // Best-effort BOQ extraction from an uploaded .xlsx file: looks for a
-  // sheet with recognizable description/unit/qty/rate columns. This is a
-  // pragmatic v1 — PDF/DOCX BOQs still require manual entry below, since
-  // this app does not currently parse those formats server-side.
-  const extractBoqFromXlsx = async (file: File) => {
+  // Best-effort BOQ extraction from an uploaded .xlsx file. Scans every sheet
+  // (not just the first) for a header row within the first 15 rows — real
+  // contractor BOQs commonly have a title/logo row or a "Bill No. 3" section
+  // header before the real column headers. Numeric cells are stripped of
+  // currency symbols/commas before parsing. PDF/DOCX BOQs still require
+  // manual entry below, since this app does not parse those server-side.
+  const BOQ_HEADER_KEYWORDS: Record<string, string[]> = {
+    description: ["description", "item", "particular"],
+    unit: ["unit", "uom"],
+    qty: ["qty", "quantity"],
+    rate: ["rate", "unitprice", "unitrate", "price"],
+    itemNo: ["itemno", "code", "sno"],
+  };
+
+  const cleanBoqNumber = (val: unknown): number | undefined => {
+    if (val === undefined || val === null || val === "") return undefined;
+    const cleaned = String(val).replace(/[^0-9.\-]/g, "");
+    if (!cleaned) return undefined;
+    const n = Number(cleaned);
+    return Number.isFinite(n) ? n : undefined;
+  };
+
+  const findBoqHeaderRow = (aoa: any[][]): { rowIdx: number; cols: Record<string, number> } | null => {
+    const scanLimit = Math.min(aoa.length, 15);
+    for (let r = 0; r < scanLimit; r++) {
+      const row = aoa[r] || [];
+      const cols: Record<string, number> = {};
+      row.forEach((cell: unknown, c: number) => {
+        const norm = String(cell ?? "").toLowerCase().replace(/[^a-z]/g, "");
+        if (!norm) return;
+        for (const [key, candidates] of Object.entries(BOQ_HEADER_KEYWORDS)) {
+          if (cols[key] === undefined && candidates.some(cand => norm.includes(cand))) {
+            cols[key] = c;
+          }
+        }
+      });
+      // A real header row needs a description column plus at least one of unit/qty/rate.
+      if (cols.description !== undefined && (cols.unit !== undefined || cols.qty !== undefined || cols.rate !== undefined)) {
+        return { rowIdx: r, cols };
+      }
+    }
+    return null;
+  };
+
+  type BoqParseResult = { items: BoqLineItem[]; sheetsWithData: string[]; warnings: string[] };
+
+  const extractBoqFromXlsx = async (file: File): Promise<BoqParseResult> => {
     const XLSX = await import("xlsx");
     const buf = await file.arrayBuffer();
     const wb = XLSX.read(buf, { type: "array" });
-    const sheet = wb.Sheets[wb.SheetNames[0]];
-    const rows: Record<string, any>[] = XLSX.utils.sheet_to_json(sheet, { defval: "" });
-    if (!rows.length) return [];
 
-    const headerKeys = Object.keys(rows[0]);
-    const find = (candidates: string[]) =>
-      headerKeys.find(h => candidates.some(c => h.toLowerCase().replace(/[^a-z]/g, "").includes(c)));
+    const items: BoqLineItem[] = [];
+    const sheetsWithData: string[] = [];
+    const warnings: string[] = [];
 
-    const descKey = find(["description", "item", "particular"]);
-    const unitKey = find(["unit", "uom"]);
-    const qtyKey = find(["qty", "quantity"]);
-    const rateKey = find(["rate", "unitprice", "unitrate", "price"]);
-    const itemNoKey = find(["itemno", "code", "sno"]);
+    for (const sheetName of wb.SheetNames) {
+      const sheet = wb.Sheets[sheetName];
+      const aoa: any[][] = XLSX.utils.sheet_to_json(sheet, { header: 1, defval: "", blankrows: false });
+      if (!aoa.length) continue;
 
-    if (!descKey) return [];
+      const header = findBoqHeaderRow(aoa);
+      if (!header) {
+        warnings.push(`"${sheetName}": no description/unit/qty/rate header found in the first ${Math.min(aoa.length, 15)} rows — skipped.`);
+        continue;
+      }
 
-    return rows
-      .map((r): BoqLineItem | null => {
-        const description = String(r[descKey] || "").trim();
-        if (!description) return null;
-        return {
-          item_no: itemNoKey ? String(r[itemNoKey] || "").trim() : undefined,
+      const { rowIdx, cols } = header;
+      let rowsFromSheet = 0;
+      for (let r = rowIdx + 1; r < aoa.length; r++) {
+        const row = aoa[r];
+        if (!row) continue;
+        const description = String(row[cols.description] ?? "").trim();
+        if (!description) continue;
+        items.push({
+          item_no: cols.itemNo !== undefined ? String(row[cols.itemNo] ?? "").trim() : undefined,
           description,
-          unit: unitKey ? String(r[unitKey] || "").trim() : "",
-          qty: qtyKey ? Number(r[qtyKey]) || undefined : undefined,
-          tender_price: rateKey ? Number(r[rateKey]) || undefined : undefined,
-        };
-      })
-      .filter((r): r is BoqLineItem => r !== null);
+          unit: cols.unit !== undefined ? String(row[cols.unit] ?? "").trim() : "",
+          qty: cols.qty !== undefined ? cleanBoqNumber(row[cols.qty]) : undefined,
+          tender_price: cols.rate !== undefined ? cleanBoqNumber(row[cols.rate]) : undefined,
+        });
+        rowsFromSheet++;
+      }
+      if (rowsFromSheet > 0) sheetsWithData.push(`${sheetName} (${rowsFromSheet})`);
+      else warnings.push(`"${sheetName}": header row found but no data rows under it.`);
+    }
+
+    return { items, sheetsWithData, warnings };
   };
 
   const handleFilesSelected = async (selected: File[]) => {
     setFiles(selected);
     const xlsxFiles = selected.filter(f => /\.(xlsx|xls)$/i.test(f.name));
-    if (xlsxFiles.length === 0) return;
+    if (xlsxFiles.length === 0) { setBoqParseStatus(null); return; }
     try {
-      const extracted = (await Promise.all(xlsxFiles.map(extractBoqFromXlsx))).flat();
-      if (extracted.length) setBoqItems(prev => [...prev, ...extracted]);
+      const results = await Promise.all(xlsxFiles.map(extractBoqFromXlsx));
+      const allItems = results.flatMap(r => r.items);
+      const allWarnings = results.flatMap(r => r.warnings);
+      const allSheetsWithData = results.flatMap(r => r.sheetsWithData);
+
+      if (allItems.length) setBoqItems(prev => [...prev, ...allItems]);
+
+      if (allItems.length) {
+        setBoqParseStatus(
+          `${allItems.length} item(s) auto-parsed from ${allSheetsWithData.join(", ")}.` +
+          (allWarnings.length ? ` ${allWarnings.join(" ")}` : "") +
+          ` Review below before submitting.`
+        );
+      } else {
+        setBoqParseStatus(
+          `No BOQ table detected in the uploaded file(s). ${allWarnings.join(" ") || "Add line items manually below."}`
+        );
+      }
     } catch {
-      // Extraction is best-effort — fall back silently to manual BOQ entry.
+      setBoqParseStatus("Couldn't parse the uploaded spreadsheet — add BOQ line items manually below.");
     }
   };
 
@@ -810,7 +877,7 @@ Apply Ethiopian construction market context. Flag FIDIC risks and assess methodo
       {result ? (
         <ResultsPanel
           result={result}
-          onReset={() => { setResult(null); setFiles([]); setBoqItems([]); setProjectName(""); setContractValue(""); }}
+          onReset={() => { setResult(null); setFiles([]); setBoqItems([]); setBoqParseStatus(null); setProjectName(""); setContractValue(""); }}
         />
       ) : loading ? (
         <LoadingPanel stage={loadingStage} />
@@ -873,6 +940,11 @@ Apply Ethiopian construction market context. Flag FIDIC risks and assess methodo
                     </div>
                   ))}
                 </div>
+              )}
+              {boqParseStatus && (
+                <p className={`text-[10px] font-bold mt-2 ${boqItems.length > 0 ? "text-emerald-600" : "text-amber-600"}`}>
+                  {boqParseStatus}
+                </p>
               )}
             </div>
 
