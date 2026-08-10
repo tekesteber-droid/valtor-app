@@ -40,7 +40,7 @@ const AI_API_URL = USE_GROQ
   : null;
 
 const AI_MODEL = USE_GEMINI
-  ? (process.env.GEMINI_MODEL || "gemini-1.5-flash")
+  ? (process.env.GEMINI_MODEL || "gemini-2.0-flash")
   : USE_GROQ
   ? (process.env.GROQ_MODEL || "llama-3.3-70b-versatile")
   : USE_OPENROUTER
@@ -178,16 +178,25 @@ async function callOpenAICompatible(systemPrompt, userPrompt, { maxRetries = 2, 
 
 const BOQ_SYSTEM_PROMPT = `You are a deterministic data-extraction engine. Your sole task is to parse Priced Bill of Quantities (BOQ) tables from Ethiopian construction contract PDFs and return a single JSON array.
 
-EXTRACTION RULES:
+CRITICAL CONTEXT ABOUT YOUR INPUT: the source text was extracted from a PDF table using a linear text extractor. Table structure (which cells belong to which row/column) is NOT preserved reliably. You will commonly see:
+- A row's item number and numeric values (quantity, rate, amount) on one line, with that row's DESCRIPTION text appearing separately — sometimes several lines away, sometimes on a different page, sometimes with NO item number attached to it at all.
+- Numeric tokens that visually look sequential but actually belong to DIFFERENT rows.
+- Sub-item rows (a), b), c)) whose numbers/description may appear out of order relative to their parent item.
+- A VERY COMMON pattern in these documents: a block of item numbers + quantities/rates/totals appears first (e.g. "1.1 324 30.00 9,720.00", "1.2 228.80 250.00 57,200.00", ...), followed later by a SEPARATE block containing the actual prose descriptions for those same items IN THE SAME SEQUENTIAL ORDER, but with NO item numbers attached to them (e.g. "Site clearing to remove top soil...", "Bulk excavation if there is..."). When you see this pattern, match description #1 in the unlabeled block to the FIRST numbered row in that section, description #2 to the SECOND numbered row, and so on — by POSITIONAL ORDER within the section, not by nearest section heading. Do NOT default to reusing the nearby section heading (e.g. "1) EXCAVATION AND EARTH WORK") as the description for every row in that section — that heading describes the section, not each individual line item, and reusing it for every row loses real information even when it doesn't break the arithmetic check.
+- If you cannot confidently determine which specific description belongs to which numbered row (the ordered-block pattern above doesn't clearly apply), it is better to return the section heading AND note low confidence than to silently guess a specific-sounding description that may be wrong.
+
+Do NOT assume physical proximity in the raw text means two things belong to the same row. Instead:
 1. Locate the table with columns: ITEM NO, DESCRIPTION, UNIT, QUANTITY, UNIT PRICE, TOTAL AMOUNT. Accept variants like "Item No", "Desc", "Qty", "Rate", "Amount", "Unit Price", "Total".
-2. Return a JSON array of objects with keys: itemNo, description, unit, quantity, unitPrice, total.
-3. itemNo: string. Preserve exact formatting (e.g., "1.1", "2.2.1", "2.4a").
-4. description: string. Merge multi-line descriptions into one line. Remove extra whitespace. Keep technical terms intact (concrete grades, dimensions, materials).
+2. Return a JSON array of objects with keys: itemNo, description, unit, quantity, unitPrice, total, confidence.
+3. itemNo: string. Preserve exact formatting (e.g., "1.1", "2.2.1", "2.4a"). If two sub-items (a, b, c) share one parent item number, append the sub-item letter (e.g. "2.2a", "2.2b") so itemNo values are unique — never emit the same itemNo twice for genuinely different rows.
+4. description: string. Prefer the real, specific per-item description over a generic section heading whenever the ordered-block pattern above lets you confidently match one. Merge multi-line descriptions into one line, but only merge lines you are confident belong to the same row. Remove extra whitespace. Keep technical terms intact (concrete grades, dimensions, materials).
 5. unit: string. Normalize to standard symbols: m³, m², ml, kg, No., pcs, set, m, hr, day, %, lump sum.
 6. quantity, unitPrice, total: numbers. Remove comma thousand separators. Do not include currency symbols.
-7. If a table spans pages, merge into one array.
-8. Skip summary rows, VAT lines, header rows, and blank lines.
-9. Return ONLY the JSON array. No markdown, no explanation.`;
+7. ARITHMETIC CHECK (mandatory): before finalizing each row, verify quantity × unitPrice ≈ total (within ~2% rounding tolerance). If the three numbers you've associated with a row do NOT satisfy this relationship, you have very likely mismatched columns or merged the wrong description with the wrong numbers. In that case, try the next-most-plausible pairing from the surrounding text. If no pairing satisfies the arithmetic check, set confidence to "low" rather than guessing — do not silently output a row whose numbers don't reconcile.
+8. confidence: one of "high" (specific per-item description matched, numbers clearly belong together, arithmetic checks out), "medium" (arithmetic checks out but description is a section heading rather than a specific per-item description, or the pairing required inference across separated lines), "low" (arithmetic does not reconcile, or description could not be confidently matched to numbers at all).
+9. If a table spans pages, merge into one array.
+10. Skip summary rows, VAT lines, header rows, and blank lines.
+11. Return ONLY the JSON array. No markdown, no explanation.`;
 
 const CLAUSE_SYSTEM_PROMPT = `You are a contract-clause extraction engine for FIDIC-based Ethiopian construction contracts.
 Extract key terms from the "Special Conditions of Contract" or "Particular Conditions" section.
@@ -397,16 +406,43 @@ export async function extractBoqWithLLM(rawText) {
 
     const result = arr
       .filter((r) => r && (r.itemNo != null || r.item_no != null || r.description))
-      .map((r) => ({
-        itemNo: String(r.itemNo || r.item_no || ""),
-        description: String(r.description || "")
-          .replace(/\s+/g, " ")
-          .trim(),
-        unit: String(r.unit || "").trim(),
-        quantity: parseNumber(r.quantity),
-        unitPrice: parseNumber(r.unitPrice || r.unit_price),
-        total: parseNumber(r.total),
-      }))
+      .map((r) => {
+        const quantity = parseNumber(r.quantity);
+        const unitPrice = parseNumber(r.unitPrice || r.unit_price);
+        const total = parseNumber(r.total);
+
+        // Independent, deterministic re-check of the LLM's own arithmetic —
+        // never trust the model's self-reported "confidence" alone, since a
+        // model can claim high confidence while still being wrong. If
+        // quantity × unitPrice doesn't reconcile with total (within 2%
+        // rounding tolerance), downgrade to "low" regardless of what the
+        // model said, so column-mismatch errors surface instead of hiding.
+        const expected = quantity * unitPrice;
+        const arithmeticOk =
+          total === 0 || expected === 0
+            ? true // can't check when one side is legitimately zero/missing
+            : Math.abs(expected - total) / Math.max(Math.abs(total), 1) <= 0.02;
+
+        const llmConfidence = String(r.confidence || "").toLowerCase();
+        const confidence = !arithmeticOk
+          ? "low"
+          : ["high", "medium", "low"].includes(llmConfidence)
+          ? llmConfidence
+          : "medium"; // model didn't report confidence — don't claim "high" for it
+
+        return {
+          itemNo: String(r.itemNo || r.item_no || ""),
+          description: String(r.description || "")
+            .replace(/\s+/g, " ")
+            .trim(),
+          unit: String(r.unit || "").trim(),
+          quantity,
+          unitPrice,
+          total,
+          confidence,
+          arithmeticVerified: arithmeticOk,
+        };
+      })
       .filter(
         (r) =>
           r.description && (r.quantity !== 0 || r.unitPrice !== 0 || r.total !== 0)
