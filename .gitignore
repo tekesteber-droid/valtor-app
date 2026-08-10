@@ -5,7 +5,9 @@ dist/
 .env
 .env.*
 !.env.example
-
+test-boq*.txt
+test-llm.mjs
+valtor-app/
 *.log
 vite.config.timestamp_*.js
 
