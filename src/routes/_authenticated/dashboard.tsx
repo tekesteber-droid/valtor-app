@@ -130,12 +130,17 @@ function BoqVarianceBars({ analysis }: { analysis: any }) {
 // ─── Risk Scatter ─────────────────────────────────────────────────────────────
 
 function RiskScatter({ audits }: { audits: any[] }) {
-  const data = audits.map(a => ({
-    name: a.project_name,
-    risk: Number(a.risk_score ?? 50),
-    value: Number(a.contract_value ?? 0) / 1_000_000,
-    fill: riskColor(Number(a.risk_score ?? 50)),
-  }));
+  // Exclude audits with no scorable risk_score (insufficient pricing data)
+  // instead of plotting them at a fabricated midpoint of 50 — that would be
+  // visually indistinguishable from a real, verified medium-risk audit.
+  const data = audits
+    .filter(a => a.risk_score != null)
+    .map(a => ({
+      name: a.project_name,
+      risk: Number(a.risk_score),
+      value: Number(a.contract_value ?? 0) / 1_000_000,
+      fill: riskColor(Number(a.risk_score)),
+    }));
 
   return (
     <ResponsiveContainer width="100%" height={180}>
@@ -171,7 +176,7 @@ function Dashboard() {
   const totalValue = audits.reduce((s, a) => s + Number(a.contract_value || 0), 0);
   const scored = audits.filter(a => a.risk_score != null);
   const avgRisk = scored.length ? Math.round(scored.reduce((s, a) => s + Number(a.risk_score!), 0) / scored.length) : null;
-  const highRisk = audits.filter(a => Number(a.risk_score ?? 0) > 65).length;
+  const highRisk = audits.filter(a => a.risk_score != null && Number(a.risk_score) > 65).length;
   const proceed = audits.filter(a => a.analysis?.recommendation === "PROCEED").length;
 
   const card = { background: "#fff", border: "1px solid #E2E8F0", borderRadius: 10, overflow: "hidden" as const, boxShadow: "0 1px 3px rgba(0,0,0,0.04)" };

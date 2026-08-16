@@ -71,7 +71,11 @@ type ScopeGap = {
 };
 
 type AuditResult = {
-  risk_score: number;
+  risk_score: number | null;
+  data_confidence?: "none" | "low" | "medium" | "high";
+  pricing_coverage_percent?: number;
+  priced_item_count?: number;
+  total_item_count?: number;
   recommendation: string;
   executive_summary: string;
   technical_critique: string;
@@ -93,7 +97,8 @@ type AuditResult = {
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
-function riskColor(score: number) {
+function riskColor(score: number | null) {
+  if (score == null) return { text: "text-slate-500", hex: "#64748B", bg: "bg-slate-50", border: "border-slate-200", bar: "bg-slate-300", label: "INSUFFICIENT DATA" };
   if (score < 35) return { text: "text-emerald-600", hex: "#059669", bg: "bg-emerald-50", border: "border-emerald-200", bar: "bg-emerald-500", label: "LOW RISK" };
   if (score < 65) return { text: "text-amber-600", hex: "#D97706", bg: "bg-amber-50", border: "border-amber-200", bar: "bg-amber-500", label: "MEDIUM RISK" };
   return { text: "text-red-600", hex: "#DC2626", bg: "bg-red-50", border: "border-red-200", bar: "bg-red-600", label: "HIGH RISK" };
@@ -157,7 +162,7 @@ function LoadingPanel({ stage }: { stage: string }) {
 function ResultsPanel({ result, onReset }: { result: AuditResult; onReset: () => void }) {
   const reduced = useReducedMotion();
   const jump = (id: string) => document.getElementById(id)?.scrollIntoView({ behavior: reduced ? "auto" : "smooth", block: "start" });
-  const risk = riskColor(result.risk_score || 0);
+  const risk = riskColor(result.risk_score ?? null);
   const totalArithmeticImpact = (result.arithmetic_errors || []).reduce((s, e) => s + (e.financial_impact || 0), 0);
   const totalScopeGapCost = (result.scope_gaps || []).reduce((s, g) => s + (g.estimated_cost_etb || 0), 0);
   const criticalCount = (result.contractual_traps || []).filter(t => t.severity === "CRITICAL" || t.severity === "HIGH").length;
@@ -192,12 +197,21 @@ function ResultsPanel({ result, onReset }: { result: AuditResult; onReset: () =>
           <div className={`panel p-6 ${risk.bg} border ${risk.border}`}>
             <p className="section-label">Risk Index</p>
             <div className={`mt-1 ${risk.text}`}>
-              <AnimatedScore value={result.risk_score} suffix={<span style={{ fontSize: "0.875rem", color: "#9CA3AF" }}>/100</span>} color={risk.hex} fontSize="3rem" />
+              {result.risk_score != null ? (
+                <AnimatedScore value={result.risk_score} suffix={<span style={{ fontSize: "0.875rem", color: "#9CA3AF" }}>/100</span>} color={risk.hex} fontSize="3rem" />
+              ) : (
+                <span style={{ fontSize: "1.5rem", fontWeight: 900 }}>—</span>
+              )}
             </div>
             <div className="mt-2 h-2 bg-white/60 rounded-full overflow-hidden">
-              <div className={`h-full ${risk.bar} rounded-full transition-all`} style={{ width: `${result.risk_score}%` }} />
+              <div className={`h-full ${risk.bar} rounded-full transition-all`} style={{ width: result.risk_score != null ? `${result.risk_score}%` : "100%" }} />
             </div>
             <p className={`text-[10px] font-black uppercase tracking-widest mt-2 ${risk.text}`}>{risk.label}</p>
+            {result.risk_score == null && (
+              <p className="text-[11px] text-slate-500 mt-1.5 leading-snug">
+                {result.priced_item_count ?? 0}/{result.total_item_count ?? 0} BOQ items had a verified reference price. Too little pricing evidence to compute a reliable score — review pricing manually before relying on this audit.
+              </p>
+            )}
             <div className="mt-3"><RecBadge rec={result.recommendation} /></div>
           </div>
 
@@ -634,8 +648,12 @@ Apply Ethiopian construction market context. Flag FIDIC risks, validate BoQ rate
 
       setLoadingStage("Processing audit findings...");
 
-      // The risk_score is already computed by the backend via calculateRiskScore()
-      const finalScore = analysis.risk_score ?? 50;
+      // The risk_score is already computed by the backend via calculateRiskScore().
+      // It may be null when pricing coverage was too thin to stand behind a
+      // confident score — never substitute a fake default number here, or
+      // an "insufficient data" audit silently becomes a fabricated "50/100
+      // medium risk" everywhere downstream (history, dashboard averages).
+      const finalScore = analysis.risk_score ?? null;
 
       // Ensure arrays are always arrays (defensive)
       analysis.contractual_traps = Array.isArray(analysis.contractual_traps) ? analysis.contractual_traps : [];
