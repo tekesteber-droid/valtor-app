@@ -13,7 +13,7 @@ export const downloadAuditExcel = (result: any) => {
       ["Audit Date", new Date().toLocaleString()],
       ["", ""],
       ["CRITICAL METRICS", ""],
-      ["Composite Risk Index", `${result.risk_score ?? 0}/100`],
+      ["Composite Risk Index", result.risk_score != null ? `${result.risk_score}/100` : "Not scored — insufficient verified evidence"],
       ["System Recommendation", result.recommendation || "N/A"],
       ["Contract Value (ETB)", (result.contract_value || 0).toLocaleString()],
       ["Target Margin", `${result.target_margin || 0}%`],

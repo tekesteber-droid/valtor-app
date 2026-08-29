@@ -73,6 +73,7 @@ type BoqLineItem = {
   unit: string;
   qty?: number;
   tender_price?: number;
+  total?: number;
 };
 
 type PricingReference = {
@@ -100,7 +101,11 @@ type ScopeGap = {
 };
 
 type AuditResult = {
-  risk_score: number;
+  // null when there isn't enough real evidence (BOQ pricing matches, clause
+  // extraction, arithmetic reconciliation) to score against — see
+  // calculateRiskScore() in api/check-analysis.js. Every renderer of this
+  // field must handle null explicitly instead of defaulting to a number.
+  risk_score: number | null;
   recommendation: string;
   executive_summary: string;
   technical_critique: string;
@@ -123,7 +128,8 @@ type AuditResult = {
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
-function riskColor(score: number) {
+function riskColor(score: number | null) {
+  if (score == null) return { text: "text-slate-500", hex: "#64748B", bg: "bg-slate-50", border: "border-slate-200", bar: "bg-slate-300", label: "INSUFFICIENT EVIDENCE" };
   if (score < 35) return { text: "text-emerald-600", hex: "#059669", bg: "bg-emerald-50", border: "border-emerald-200", bar: "bg-emerald-500", label: "LOW RISK" };
   if (score < 65) return { text: "text-amber-600", hex: "#D97706", bg: "bg-amber-50", border: "border-amber-200", bar: "bg-amber-500", label: "MEDIUM RISK" };
   return { text: "text-red-600", hex: "#DC2626", bg: "bg-red-50", border: "border-red-200", bar: "bg-red-600", label: "HIGH RISK" };
@@ -191,10 +197,10 @@ function LoadingPanel({ stage }: { stage: string }) {
 
 // ─── Results Panel ────────────────────────────────────────────────────────────
 
-function ResultsPanel({ result, onReset }: { result: AuditResult; onReset: () => void }) {
+function ResultsPanel({ result, onReset, hasExtractedClauses }: { result: AuditResult; onReset: () => void; hasExtractedClauses: boolean }) {
   const reduced = useReducedMotion();
   const jump = (id: string) => document.getElementById(id)?.scrollIntoView({ behavior: reduced ? "auto" : "smooth", block: "start" });
-  const risk = riskColor(result.risk_score || 0);
+  const risk = riskColor(result.risk_score);
   const totalArithmeticImpact = (result.arithmetic_errors || []).reduce((s, e) => s + (e.financial_impact || 0), 0);
   const totalScopeGapCost = (result.scope_gaps || []).reduce((s, g) => s + (g.estimated_cost_etb || 0), 0);
   const criticalCount = (result.contractual_traps || []).filter(t => t.severity === "CRITICAL" || t.severity === "HIGH").length;
@@ -229,12 +235,21 @@ function ResultsPanel({ result, onReset }: { result: AuditResult; onReset: () =>
           <div className={`panel p-6 ${risk.bg} border ${risk.border}`}>
             <p className="section-label">Risk Index</p>
             <div className={`mt-1 ${risk.text}`}>
-              <AnimatedScore value={result.risk_score} suffix={<span style={{ fontSize: "0.875rem", color: "#9CA3AF" }}>/100</span>} color={risk.hex} fontSize="3rem" />
+              {result.risk_score == null ? (
+                <span style={{ fontSize: "1.5rem", fontWeight: 800 }}>Not scored</span>
+              ) : (
+                <AnimatedScore value={result.risk_score} suffix={<span style={{ fontSize: "0.875rem", color: "#9CA3AF" }}>/100</span>} color={risk.hex} fontSize="3rem" />
+              )}
             </div>
             <div className="mt-2 h-2 bg-white/60 rounded-full overflow-hidden">
-              <div className={`h-full ${risk.bar} rounded-full transition-all`} style={{ width: `${result.risk_score}%` }} />
+              <div className={`h-full ${risk.bar} rounded-full transition-all`} style={{ width: `${result.risk_score ?? 8}%` }} />
             </div>
             <p className={`text-[10px] font-black uppercase tracking-widest mt-2 ${risk.text}`}>{risk.label}</p>
+            {result.risk_score == null && (
+              <p className="text-[10px] text-slate-500 mt-2">
+                Not enough verified evidence (matched pricing, extracted clauses, or arithmetic checks) to compute a risk score. Upload the tender document, or add priced BOQ line items, for a scored audit.
+              </p>
+            )}
             <div className="mt-3"><RecBadge rec={result.recommendation} /></div>
           </div>
 
@@ -401,9 +416,15 @@ function ResultsPanel({ result, onReset }: { result: AuditResult; onReset: () =>
       <StaggerItem>
         <ReportSection id="risk-register" title="Legal & FIDIC Contractual Risk Analysis" icon={<Scale size={15} className="text-red-600" />}>
           {(result.contractual_traps || []).length === 0 ? (
-            <div className="flex items-center gap-2 text-[12px] text-emerald-700 bg-emerald-50 p-3 rounded border border-emerald-100">
-              <CheckCircle2 size={14} /> No significant contractual traps or FIDIC clause violations detected.
-            </div>
+            hasExtractedClauses ? (
+              <div className="flex items-center gap-2 text-[12px] text-emerald-700 bg-emerald-50 p-3 rounded border border-emerald-100">
+                <CheckCircle2 size={14} /> No significant contractual traps detected in the extracted contract terms.
+              </div>
+            ) : (
+              <div className="flex items-center gap-2 text-[12px] text-slate-600 bg-slate-50 p-3 rounded border border-slate-200">
+                <AlertCircle size={14} /> No clause data available — upload the tender/contract document (PDF or DOCX) to extract and check contractual terms. Manual BOQ entry alone doesn't provide clause text.
+              </div>
+            )
           ) : (
             <div className="space-y-3">
               <p className="text-[11px] text-slate-500 mb-3">
@@ -602,122 +623,125 @@ function AuditPage() {
   const [boqParseStatus, setBoqParseStatus] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  // Best-effort BOQ extraction from an uploaded .xlsx file. Scans every sheet
-  // (not just the first) for a header row within the first 15 rows — real
-  // contractor BOQs commonly have a title/logo row or a "Bill No. 3" section
-  // header before the real column headers. Numeric cells are stripped of
-  // currency symbols/commas before parsing. PDF/DOCX BOQs still require
-  // manual entry below, since this app does not parse those server-side.
-  const BOQ_HEADER_KEYWORDS: Record<string, string[]> = {
-    description: ["description", "item", "particular"],
-    unit: ["unit", "uom"],
-    qty: ["qty", "quantity"],
-    rate: ["rate", "unitprice", "unitrate", "price"],
-    itemNo: ["itemno", "code", "sno"],
-  };
+  // Real text extracted from uploaded PDFs/DOCX/XLSX files by /api/extract-boq.
+  // This is sent to /api/check-analysis so narrative analysis is grounded in
+  // document content, not filenames or generic project metadata.
+  const [documentText, setDocumentText] = useState("");
+  const [extracting, setExtracting] = useState(false);
 
-  const cleanBoqNumber = (val: unknown): number | undefined => {
-    if (val === undefined || val === null || val === "") return undefined;
-    const cleaned = String(val).replace(/[^0-9.\-]/g, "");
-    if (!cleaned) return undefined;
-    const n = Number(cleaned);
-    return Number.isFinite(n) ? n : undefined;
-  };
+  // Extracted contract clause data (Defects Liability Period, Liquidated
+  // Damages, Price Adjustment, etc.) from the most recently uploaded
+  // document, pulled verbatim from the actual text — never invented. Sent
+  // through to /api/check-analysis so contractual_traps can be computed
+  // from real clause values instead of the LLM inventing FIDIC clause
+  // numbers with no document text behind them.
+  const [extractedClauses, setExtractedClauses] = useState<Record<string, string | null> | null>(null);
 
-  const findBoqHeaderRow = (aoa: any[][]): { rowIdx: number; cols: Record<string, number> } | null => {
-    const scanLimit = Math.min(aoa.length, 15);
-    for (let r = 0; r < scanLimit; r++) {
-      const row = aoa[r] || [];
-      const cols: Record<string, number> = {};
-      row.forEach((cell: unknown, c: number) => {
-        const norm = String(cell ?? "").toLowerCase().replace(/[^a-z]/g, "");
-        if (!norm) return;
-        for (const [key, candidates] of Object.entries(BOQ_HEADER_KEYWORDS)) {
-          if (cols[key] === undefined && candidates.some(cand => norm.includes(cand))) {
-            cols[key] = c;
-          }
-        }
-      });
-      // A real header row needs a description column plus at least one of unit/qty/rate.
-      if (cols.description !== undefined && (cols.unit !== undefined || cols.qty !== undefined || cols.rate !== undefined)) {
-        return { rowIdx: r, cols };
-      }
-    }
-    return null;
-  };
-
-  type BoqParseResult = { items: BoqLineItem[]; sheetsWithData: string[]; warnings: string[] };
-
-  const extractBoqFromXlsx = async (file: File): Promise<BoqParseResult> => {
-    const XLSX = await import("xlsx");
-    const buf = await file.arrayBuffer();
-    const wb = XLSX.read(buf, { type: "array" });
-
-    const items: BoqLineItem[] = [];
-    const sheetsWithData: string[] = [];
-    const warnings: string[] = [];
-
-    for (const sheetName of wb.SheetNames) {
-      const sheet = wb.Sheets[sheetName];
-      const aoa: any[][] = XLSX.utils.sheet_to_json(sheet, { header: 1, defval: "", blankrows: false });
-      if (!aoa.length) continue;
-
-      const header = findBoqHeaderRow(aoa);
-      if (!header) {
-        warnings.push(`"${sheetName}": no description/unit/qty/rate header found in the first ${Math.min(aoa.length, 15)} rows — skipped.`);
-        continue;
-      }
-
-      const { rowIdx, cols } = header;
-      let rowsFromSheet = 0;
-      for (let r = rowIdx + 1; r < aoa.length; r++) {
-        const row = aoa[r];
-        if (!row) continue;
-        const description = String(row[cols.description] ?? "").trim();
-        if (!description) continue;
-        items.push({
-          item_no: cols.itemNo !== undefined ? String(row[cols.itemNo] ?? "").trim() : undefined,
-          description,
-          unit: cols.unit !== undefined ? String(row[cols.unit] ?? "").trim() : "",
-          qty: cols.qty !== undefined ? cleanBoqNumber(row[cols.qty]) : undefined,
-          tender_price: cols.rate !== undefined ? cleanBoqNumber(row[cols.rate]) : undefined,
-        });
-        rowsFromSheet++;
-      }
-      if (rowsFromSheet > 0) sheetsWithData.push(`${sheetName} (${rowsFromSheet})`);
-      else warnings.push(`"${sheetName}": header row found but no data rows under it.`);
-    }
-
-    return { items, sheetsWithData, warnings };
-  };
-
+  // Uploaded files (PDF, DOCX, XLSX/XLS — any mix) are sent to the server
+  // in one call. The server picks the extraction path per file type
+  // (text-layer PDF parsing, OCR fallback for scanned PDFs, DOCX table
+  // parsing, or structured xlsx header-detection) and returns BOQ line
+  // items in the fixed schema below — there is no column-mapping step for
+  // the user to configure; if a file can't be parsed automatically, its
+  // rows are simply absent and reported in the warning message, and the
+  // user adds/corrects rows in the editable table that follows.
   const handleFilesSelected = async (selected: File[]) => {
     setFiles(selected);
-    const xlsxFiles = selected.filter(f => /\.(xlsx|xls)$/i.test(f.name));
-    if (xlsxFiles.length === 0) { setBoqParseStatus(null); return; }
+    const serverFiles = selected.filter(f => /\.(pdf|docx|xlsx|xls)$/i.test(f.name));
+    if (serverFiles.length === 0) {
+      setBoqParseStatus("Unsupported file type(s) — supported: .pdf, .docx, .xlsx, .xls. Add BOQ line items manually below.");
+      return;
+    }
+
+    setExtracting(true);
+    setBoqParseStatus("Extracting BOQ line items and contract terms…");
     try {
-      const results = await Promise.all(xlsxFiles.map(extractBoqFromXlsx));
-      const allItems = results.flatMap(r => r.items);
-      const allWarnings = results.flatMap(r => r.warnings);
-      const allSheetsWithData = results.flatMap(r => r.sheetsWithData);
+      const { data: { session } } = await supabase.auth.getSession();
+      if (!session) {
+        setBoqParseStatus("Sign in required to auto-extract documents — add BOQ line items manually below.");
+        return;
+      }
 
-      if (allItems.length) setBoqItems(prev => [...prev, ...allItems]);
+      const statusParts: string[] = [];
+      const textParts: string[] = [];
+      const clauseSets: Record<string, string | null>[] = [];
 
-      if (allItems.length) {
-        setBoqParseStatus(
-          `${allItems.length} item(s) auto-parsed from ${allSheetsWithData.join(", ")}.` +
-          (allWarnings.length ? ` ${allWarnings.join(" ")}` : "") +
-          ` Review below before submitting.`
-        );
-      } else {
-        setBoqParseStatus(
-          `No BOQ table detected in the uploaded file(s). ${allWarnings.join(" ") || "Add line items manually below."}`
+      for (const file of serverFiles) {
+        const formData = new FormData();
+        formData.append("file", file);
+
+        const res = await fetch("/api/extract-boq", {
+          method: "POST",
+          headers: { "Authorization": `Bearer ${session.access_token}` },
+          body: formData,
+        });
+
+        const data = await res.json();
+        if (!res.ok) {
+          statusParts.push(`"${file.name}": extraction failed — ${data.error || `API Error ${res.status}`}.`);
+          continue;
+        }
+
+        const extractedItems = Array.isArray(data.items)
+          ? data.items
+          : Array.isArray(data.boqItems)
+          ? data.boqItems
+          : [];
+
+        if (extractedItems.length) {
+          setBoqItems(prev => [
+            ...prev,
+            ...extractedItems.map((item: any) => ({
+              item_no: item.item_no || item.itemNo,
+              description: item.description || "",
+              unit: item.unit || "",
+              qty: item.qty ?? item.quantity,
+              tender_price: item.tender_price ?? item.unitPrice ?? item.unit_price,
+              total: item.total,
+            })),
+          ]);
+        }
+
+        if (data.clauses) clauseSets.push(data.clauses);
+
+        const rawText = typeof data.rawText === "string" ? data.rawText.trim() : "";
+        if (rawText) textParts.push(`--- ${file.name} ---\n${rawText}`);
+
+        const warnings = [
+          ...(Array.isArray(data.warnings) ? data.warnings : []),
+          ...(Array.isArray(data.meta?.warnings) ? data.meta.warnings : []),
+        ];
+        statusParts.push(
+          `"${file.name}": ${extractedItems.length} BOQ item(s)` +
+          (rawText ? `, ${rawText.length.toLocaleString()} chars extracted` : "") +
+          (data.clauses ? ", contract terms extracted" : "") +
+          (warnings.length ? ` — ${warnings.join(" ")}` : ".")
         );
       }
-    } catch {
-      setBoqParseStatus("Couldn't parse the uploaded spreadsheet — add BOQ line items manually below.");
+
+      if (textParts.length) {
+        setDocumentText(prev => [prev, ...textParts].filter(Boolean).join("\n\n"));
+      }
+      if (clauseSets.length) {
+        setExtractedClauses(prev => {
+          const merged: Record<string, string | null> = { ...(prev || {}) };
+          for (const set of clauseSets) {
+            for (const [key, value] of Object.entries(set)) {
+              if (merged[key] == null && value != null) merged[key] = value;
+            }
+          }
+          return merged;
+        });
+      }
+
+      setBoqParseStatus(`${statusParts.join(" ")} Review below before submitting.`);
+    } catch (err: any) {
+      setBoqParseStatus(`Extraction failed: ${err.message || "unknown error"}. Add BOQ line items manually below.`);
+    } finally {
+      setExtracting(false);
     }
   };
+
 
   const addBoqRow = () => setBoqItems(prev => [...prev, { description: "", unit: "", qty: undefined, tender_price: undefined }]);
   const updateBoqRow = (i: number, patch: Partial<BoqLineItem>) =>
@@ -737,60 +761,54 @@ function AuditPage() {
 
       const systemPrompt = `You are VLT-Core, a senior forensic construction bid auditor with 20+ years of experience in Ethiopian and East African infrastructure projects. You specialize in FIDIC contract analysis, Ethiopian procurement law (PPA 2011 and ERA specifications), and BoQ validation.
 
-Your task is to produce a DEEP, COMPREHENSIVE forensic audit. Every section MUST contain substantive, specific content — never return empty arrays or vague placeholders.
+Your task is to produce a forensic audit grounded strictly in the document text and evidence you are given.
+Report exactly what the evidence supports — no more, no less. Empty arrays or concise "not enough evidence"
+statements are correct where the evidence does not support a real finding; fabricated specificity is a critical
+failure, not a feature.
 
 CRITICAL OUTPUT RULES:
 1. Return ONLY valid JSON. No markdown, no code fences, no preamble.
-2. Every array must have AT LEAST 2-4 items with realistic, specific data.
-3. Do NOT produce a "market_variance" array — verified pricing evidence for this bid's BOQ items will be
+2. Do NOT produce a "market_variance" array — verified pricing evidence for this bid's BOQ items will be
    supplied to you separately, sourced from the official Addis Ababa Construction Works price book. Any
    market_variance field you output will be discarded and replaced with that verified evidence.
-4. contractual_traps MUST contain 2-4 specific FIDIC clause references with real clause numbers.
-5. Be specific to Ethiopian construction context (use ETB rates, local material names, ERA/EIC references).
-6. The pricing evidence provided is from a quarterly schedule (2018 E.C. 4th Quarter, Direct Cost only).
+3. Do NOT produce "arithmetic_errors", "contractual_traps", or "scope_gaps" fields. arithmetic_errors and
+   contractual_traps are computed deterministically/rule-based elsewhere in the pipeline (from real BOQ math
+   and real extracted clause text, when a document was uploaded) — do NOT invent FIDIC clause numbers or
+   specific arithmetic discrepancies yourself; you have not been given the document text needed to verify
+   either. scope_gaps stays disabled since this system has no drawings/spec text to compare BOQ coverage
+   against. Anything you output for any of these three fields will be discarded.
+4. Be specific to Ethiopian construction context (use ETB rates, local material names, ERA/EIC references)
+   only where the supplied evidence supports it.
+5. The pricing evidence provided is from a quarterly schedule (2018 E.C. 4th Quarter, Direct Cost only).
    It is a benchmark for consistency checking, not current market pricing. Do not describe it as "current"
    or "live" — state clearly that it is a reference schedule and users should validate with current
    supplier quotes before making commercial decisions.
+6. If real extracted document text or contract terms are supplied to you below, you MAY reference them
+   specifically in executive_summary, financial_risk_summary, technical_critique, and key_risks — that data
+   is real and traceable. If no document text or contract terms are supplied, keep commentary general to this
+   project type/value/margin and do not claim to have reviewed contract clauses or document text.
 
 **IMPORTANT**: Do NOT include a "risk_score" field in the JSON. We will calculate it separately from the provided data.
 
 Return this exact JSON structure:
 {
   "recommendation": <"PROCEED" | "PROCEED_WITH_CAUTION" | "DECLINE">,
-  "executive_summary": <2-3 sentence summary with specific financial observations>,
-  "financial_risk_summary": <detailed paragraph on financial exposure and margin sustainability>,
-  "key_risks": [<4-6 specific risk statements, each one sentence>],
-  "technical_critique": <2-3 paragraph detailed methodology assessment>,
-  "methodology_strengths": [<3-4 specific strengths observed>],
-  "methodology_weaknesses": [<3-4 specific weaknesses or gaps>],
+  "executive_summary": <2-3 sentence summary with evidence-supported financial observations>,
+  "financial_risk_summary": <paragraph on financial exposure and margin sustainability>,
+  "key_risks": [<evidence-supported risk statements, or [] if none are supported>],
+  "technical_critique": <1-3 paragraph methodology assessment grounded in supplied evidence>,
+  "methodology_strengths": [<specific strengths observed, or [] if none are supported>],
+  "methodology_weaknesses": [<specific weaknesses or gaps, or [] if none are supported>],
   "plant_adequacy_assessment": <1-2 sentences on plant and equipment sufficiency>,
-  "arithmetic_errors": [
-    {
-      "location": <specific BoQ section or item reference>,
-      "description": <what the error is>,
-      "severity": <"HIGH" | "MEDIUM" | "LOW">,
-      "financial_impact": <estimated ETB value as integer, 0 if unknown>
-    }
-  ],
-  "contractual_traps": [
-    {
-      "clause_type": <specific contract clause name, e.g. "Liquidated Damages", "Retention Money", "Variation Clause">,
-      "fidic_ref": <FIDIC clause number e.g. "Clause 8.7" or "Sub-Clause 14.9">,
-      "severity": <"CRITICAL" | "HIGH" | "MEDIUM" | "LOW">,
-      "description": <specific risk this clause poses in 2-3 sentences>,
-      "recommendation": <specific action to mitigate this risk>
-    }
-  ],
-  "scope_gaps": [
-    {
-      "missing_element": <specific missing scope item>,
-      "risk_impact": <how this gap affects project delivery>,
-      "estimated_cost_etb": <estimated cost to cover gap as integer>
-    }
-  ],
   "resource_gap_analysis": <detailed paragraph on labor, equipment, and subcontractor capacity>,
   "regulatory_compliance": <specific statement on Ethiopian procurement law, EIC, and ERA compliance>
 }`;
+
+      const clauseSummaryLines = extractedClauses
+        ? Object.entries(extractedClauses)
+            .filter(([, v]) => v != null && String(v).trim() !== "")
+            .map(([k, v]) => `- ${k}: ${String(v).slice(0, 200)}`)
+        : [];
 
       const userPrompt = `Conduct a full forensic audit of this construction bid:
 
@@ -802,7 +820,11 @@ Submitted Documents: ${fileList}
 
 ${boqItems.length > 0 ? `${boqItems.length} BOQ line item(s) were submitted with bid rates; verified pricing evidence for these will follow below.` : "No structured BOQ line items were submitted; skip item-level pricing commentary."}
 
-Apply Ethiopian construction market context. Flag FIDIC risks and assess methodology for ERA specification compliance. Be specific and actionable. Do not comment on market pricing beyond the verified evidence provided.`;
+${clauseSummaryLines.length > 0
+  ? `Contract terms were extracted from the uploaded document (verbatim, not inferred). Reference these specific terms where relevant — this is real document-specific evidence, not general commentary:\n${clauseSummaryLines.join("\n")}\n\nA rule-based contractual risk register has ALSO been computed separately from this same clause data and will be shown to the user in its own section — do not duplicate it verbatim, but you may reference its themes narratively.`
+  : "No contract clause text was extracted (no document uploaded, or extraction found nothing) — do not claim to have reviewed contract clauses."}
+
+Apply Ethiopian construction market context. Flag FIDIC risks narratively and assess methodology for ERA specification compliance. Be specific and actionable. Do not comment on market pricing beyond the verified evidence provided.`;
 
       // Route through our own serverless proxy (api/check-analysis.js)
       const { data: { session } } = await supabase.auth.getSession();
@@ -814,7 +836,14 @@ Apply Ethiopian construction market context. Flag FIDIC risks and assess methodo
           "Content-Type": "application/json",
           "Authorization": `Bearer ${session.access_token}`
         },
-        body: JSON.stringify({ systemPrompt, userPrompt, boqItems })
+        body: JSON.stringify({
+          systemPrompt,
+          userPrompt,
+          boqItems,
+          contractValue: contractValue ? Number(contractValue) : null,
+          clauses: extractedClauses,
+          documentText: documentText || null,
+        })
       });
 
       const analysis = await res.json();
@@ -822,8 +851,11 @@ Apply Ethiopian construction market context. Flag FIDIC risks and assess methodo
 
       setLoadingStage("Processing audit findings...");
 
-      // The risk_score is already computed by the backend via calculateRiskScore()
-      const finalScore = analysis.risk_score ?? 50;
+      // The risk_score is already computed by the backend via calculateRiskScore().
+      // It can legitimately be null (insufficient evidence) — that must NOT be
+      // coerced into a fake number here; see riskColor()/the results panel for
+      // how null is rendered honestly instead.
+      const finalScore: number | null = typeof analysis.risk_score === "number" ? analysis.risk_score : null;
 
       // Ensure arrays are always arrays (defensive)
       analysis.contractual_traps = Array.isArray(analysis.contractual_traps) ? analysis.contractual_traps : [];
@@ -877,7 +909,11 @@ Apply Ethiopian construction market context. Flag FIDIC risks and assess methodo
       {result ? (
         <ResultsPanel
           result={result}
-          onReset={() => { setResult(null); setFiles([]); setBoqItems([]); setBoqParseStatus(null); setProjectName(""); setContractValue(""); }}
+          onReset={() => {
+            setResult(null); setFiles([]); setBoqItems([]); setBoqParseStatus(null);
+            setDocumentText(""); setExtractedClauses(null); setProjectName(""); setContractValue("");
+          }}
+          hasExtractedClauses={extractedClauses != null}
         />
       ) : loading ? (
         <LoadingPanel stage={loadingStage} />
@@ -1027,13 +1063,13 @@ Apply Ethiopian construction market context. Flag FIDIC risks and assess methodo
 
             <button
               onClick={runAudit}
-              disabled={loading || !projectName || !contractValue}
+              disabled={loading || extracting || !projectName || !contractValue}
               className="btn-primary w-full py-4 justify-center disabled:opacity-50 disabled:cursor-not-allowed"
             >
-              {loading ? (
+              {loading || extracting ? (
                 <span className="flex items-center gap-2">
                   <Loader2 className="animate-spin" size={16} />
-                  {loadingStage || "Running forensic audit..."}
+                  {extracting ? "Extracting document text..." : (loadingStage || "Running forensic audit...")}
                 </span>
               ) : (
                 "Execute Deep Forensic Audit"

@@ -130,12 +130,19 @@ function BoqVarianceBars({ analysis }: { analysis: any }) {
 // ─── Risk Scatter ─────────────────────────────────────────────────────────────
 
 function RiskScatter({ audits }: { audits: any[] }) {
-  const data = audits.map(a => ({
-    name: a.project_name,
-    risk: Number(a.risk_score ?? 50),
-    value: Number(a.contract_value ?? 0) / 1_000_000,
-    fill: riskColor(Number(a.risk_score ?? 50)),
-  }));
+  // Unscored audits (risk_score === null — insufficient evidence) are
+  // excluded from the scatter entirely rather than plotted at a fake
+  // midpoint. Plotting them at 50 would visually claim "medium risk" for
+  // audits that were never actually scored — the same fabrication this
+  // system otherwise goes out of its way to avoid elsewhere.
+  const data = audits
+    .filter(a => a.risk_score != null)
+    .map(a => ({
+      name: a.project_name,
+      risk: Number(a.risk_score),
+      value: Number(a.contract_value ?? 0) / 1_000_000,
+      fill: riskColor(Number(a.risk_score)),
+    }));
 
   return (
     <ResponsiveContainer width="100%" height={180}>
@@ -171,7 +178,9 @@ function Dashboard() {
   const totalValue = audits.reduce((s, a) => s + Number(a.contract_value || 0), 0);
   const scored = audits.filter(a => a.risk_score != null);
   const avgRisk = scored.length ? Math.round(scored.reduce((s, a) => s + Number(a.risk_score!), 0) / scored.length) : null;
-  const highRisk = audits.filter(a => Number(a.risk_score ?? 0) > 65).length;
+  // Unscored audits are excluded, not treated as risk=0 — an unscored bid
+  // is "unknown," not "confirmed low-risk."
+  const highRisk = scored.filter(a => Number(a.risk_score) > 65).length;
   const proceed = audits.filter(a => a.analysis?.recommendation === "PROCEED").length;
 
   const card = { background: "#fff", border: "1px solid #E2E8F0", borderRadius: 10, overflow: "hidden" as const, boxShadow: "0 1px 3px rgba(0,0,0,0.04)" };

@@ -21,11 +21,15 @@ function localApiPlugin(): Plugin {
 
         try {
           // Vercel parses the JSON body for you; plain Node/Vite middleware
-          // does not, so do it ourselves.
-          const chunks: Buffer[] = [];
-          for await (const chunk of req) chunks.push(chunk as Buffer);
-          const raw = Buffer.concat(chunks).toString("utf-8");
-          (req as any).body = raw ? JSON.parse(raw) : {};
+          // does not, so do it ourselves ONLY if it's application/json.
+          // This leaves multipart/form-data requests unconsumed so Busboy/extract-boq
+          // can read the file upload stream directly.
+          if (req.headers["content-type"]?.includes("application/json")) {
+            const chunks: Buffer[] = [];
+            for await (const chunk of req) chunks.push(chunk as Buffer);
+            const raw = Buffer.concat(chunks).toString("utf-8");
+            (req as any).body = raw ? JSON.parse(raw) : {};
+          }
 
           // Vercel's `res` adds .status()/.json() helpers on top of Node's
           // ServerResponse — polyfill just those two.
