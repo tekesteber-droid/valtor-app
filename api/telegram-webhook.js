@@ -37,27 +37,77 @@ async function getFileBuffer(fileId) {
   return { buffer: Buffer.from(arrayBuffer), fileName: filePath.split("/").pop() };
 }
 
+async function getServiceAuthToken() {
+  // extract-boq.js requires a Bearer token validated via
+  // supabaseAdmin.auth.getUser(token) — that's designed for real logged-in
+  // browser sessions, which this bot has none of. Rather than weaken
+  // extract-boq.js's auth check (a real security boundary for the actual
+  // product), this bot authenticates as a dedicated service user via
+  // Supabase's password grant, using credentials for a Supabase user
+  // created specifically for this purpose (not your personal login).
+  //
+  // Setup required (one-time, in Supabase dashboard):
+  //   1. Create a user, e.g. telegram-bot@bidswift.internal, with a strong
+  //      generated password — Authentication > Users > Add User.
+  //   2. Set TELEGRAM_BOT_SUPABASE_EMAIL / TELEGRAM_BOT_SUPABASE_PASSWORD
+  //      env vars to that user's credentials.
+  const email = process.env.TELEGRAM_BOT_SUPABASE_EMAIL;
+  const password = process.env.TELEGRAM_BOT_SUPABASE_PASSWORD;
+  const supabaseUrl = process.env.VITE_SUPABASE_URL;
+  const anonKey = process.env.VITE_SUPABASE_ANON_KEY;
+
+  if (!email || !password) {
+    throw new Error(
+      "TELEGRAM_BOT_SUPABASE_EMAIL / TELEGRAM_BOT_SUPABASE_PASSWORD not set — the bot has no way to authenticate to extract-boq.js. See getServiceAuthToken() comment for setup."
+    );
+  }
+
+  const res = await fetch(`${supabaseUrl}/auth/v1/token?grant_type=password`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", apikey: anonKey },
+    body: JSON.stringify({ email, password }),
+  });
+  if (!res.ok) {
+    const txt = await res.text();
+    throw new Error(`Supabase auth failed for service bot user (${res.status}): ${txt.slice(0, 200)}`);
+  }
+  const data = await res.json();
+  return data.access_token;
+}
+
 // Calls the SAME internal endpoints the web UI uses — no duplicated logic.
 async function runAudit(buffer, fileName, baseUrl) {
+  const authToken = await getServiceAuthToken();
+
   const form = new FormData();
   form.append("file", new Blob([buffer]), fileName);
 
   const extractRes = await fetch(`${baseUrl}/api/extract-boq`, {
     method: "POST",
+    headers: { Authorization: `Bearer ${authToken}` },
     body: form,
   });
+
+  if (!extractRes.ok) {
+    const errBody = await extractRes.json().catch(() => ({}));
+    throw new Error(`extract-boq returned ${extractRes.status}: ${errBody.error || "unknown error"}`);
+  }
+
   const extractData = await extractRes.json();
 
   if (!extractData.boqItems || extractData.boqItems.length === 0) {
     return {
-      summary: `Extraction returned 0 BOQ items.\n\n${extractData.warning || "No further detail available."}`,
+      summary: `Extraction returned 0 BOQ items.\n\n${extractData.warning || extractData.meta?.warnings?.join(" ") || "No further detail available."}`,
       full: extractData,
     };
   }
 
   const analysisRes = await fetch(`${baseUrl}/api/check-analysis`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${authToken}`,
+    },
     body: JSON.stringify({
       boqItems: extractData.boqItems,
       contractValue: null, // Telegram flow has no form input for this —
@@ -66,6 +116,12 @@ async function runAudit(buffer, fileName, baseUrl) {
       clauseTerms: extractData.clauseTerms || null,
     }),
   });
+
+  if (!analysisRes.ok) {
+    const errBody = await analysisRes.json().catch(() => ({}));
+    throw new Error(`check-analysis returned ${analysisRes.status}: ${errBody.error || "unknown error"}`);
+  }
+
   const analysisData = await analysisRes.json();
 
   const riskLine =
