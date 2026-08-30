@@ -1,8 +1,8 @@
 // api/check-analysis.js
 import { createClient } from "@supabase/supabase-js";
-import { getPricingEngine } from "./lib/pricingEngine.js";
-import { buildPricingEvidence, buildPricingReference } from "./lib/pricingEvidence.js";
-import { validateArithmetic } from "./lib/arithmeticValidator.js";
+import { getPricingEngine } from "./_lib/pricingEngine.js";
+import { buildPricingEvidence, buildPricingReference } from "./_lib/pricingEvidence.js";
+import { validateArithmetic } from "./_lib/arithmeticValidator.js";
 
 const supabaseAdmin = createClient(
   process.env.VITE_SUPABASE_URL,

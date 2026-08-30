@@ -1,4 +1,4 @@
-import { getPricingEngine } from "./lib/pricingEngine.js";
+import { getPricingEngine } from "./_lib/pricingEngine.js";
 import fs from 'fs/promises';
 import path from 'path';
 import { fileURLToPath } from 'url';

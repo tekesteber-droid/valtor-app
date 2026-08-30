@@ -12,3 +12,4 @@ valtor-app/
 vite.config.timestamp_*.js
 
 .vercel
+.env*

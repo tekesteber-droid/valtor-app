@@ -17,10 +17,10 @@
 
 import { createClient } from "@supabase/supabase-js";
 import busboy from "busboy";
-import { extractPdfText } from "./lib/pdfExtractor.js";
-import { extractDocxText } from "./lib/docxExtractor.js";
-import { extractBoqFromXlsxBuffer, flattenXlsxToText } from "./lib/xlsxExtractor.js";
-import { extractBoqWithLLM, extractClausesWithLLM } from "./lib/boqExtractor.js";
+import { extractPdfText } from "./_lib/pdfExtractor.js";
+import { extractDocxText } from "./_lib/docxExtractor.js";
+import { extractBoqFromXlsxBuffer, flattenXlsxToText } from "./_lib/xlsxExtractor.js";
+import { extractBoqWithLLM, extractClausesWithLLM } from "./_lib/boqExtractor.js";
 
 const supabaseAdmin = createClient(
   process.env.VITE_SUPABASE_URL,
@@ -104,12 +104,26 @@ export default async function handler(req, res) {
   try {
     // ─── xlsx: deterministic first, LLM fallback for non-tabular sheets ──
     if (fileType === "xlsx") {
-      const { items, sheetsWithData, warnings, skippedNonItemRows } = extractBoqFromXlsxBuffer(fileBuffer);
+      const { items, sheetsWithData, warnings, skippedNonItemRows, skippedSheetNames } =
+        extractBoqFromXlsxBuffer(fileBuffer);
 
-      if (items.length > 0) {
-        // Clean tabular BOQ (like a standard "Description/Unit/Qty/Rate"
-        // template) — deterministic parsing found real rows. No LLM call
-        // needed; this path is free and fast.
+      // Real tenders are commonly a MIX: some sheets have a clean header
+      // row (deterministic pass handles these for free), others are
+      // narrative-layout and get skipped (need the LLM fallback). The old
+      // logic here returned immediately on ANY deterministic items being
+      // found, which meant a file with 5 good sheets and 3 narrative
+      // sheets would silently never attempt the narrative ones — this is
+      // very likely the direct cause of results looking "half right, half
+      // missing/wrong": some real items present, others never attempted.
+      //
+      // Fixed: only skip the LLM fallback entirely if there are no
+      // skipped sheets left to try it on. Otherwise, run the LLM fallback
+      // scoped ONLY to the sheets the deterministic pass couldn't parse —
+      // not the whole workbook (see flattenXlsxToText's sheetNames param
+      // below) — so cover pages, preambles, and summaries never enter the
+      // LLM's input at all, and the LLM's output is merged with the
+      // deterministic items rather than replacing them.
+      if (skippedSheetNames.length === 0) {
         return res.status(200).json({
           fileName,
           fileType,
@@ -125,31 +139,34 @@ export default async function handler(req, res) {
         });
       }
 
-      // Deterministic pass found nothing — this is common with real-world
-      // Ethiopian BOQs, which are often laid out as narrative item
-      // descriptions in their own rows with quantities/rates in nearby
-      // rows or columns, rather than one clean header row naming every
-      // field (confirmed directly against a real 18-sheet tender BOQ:
-      // header keywords like "ITEM"/"SIZE"/"M3" don't match the
-      // description/unit/qty/rate synonym list, and item numbers like
-      // "1.01" live inside description text rather than their own
-      // column). Rather than give up, flatten every sheet to plain text
-      // and let the LLM extractor — the same one used for PDF/DOCX BOQs —
-      // find items in it. This costs one LLM call instead of being free,
-      // but only runs when the free deterministic path genuinely found
-      // nothing.
-      const flattenedText = flattenXlsxToText(fileBuffer);
+      // Deterministic pass found nothing (or found some, but other sheets
+      // remain unparsed) — this is common with real-world Ethiopian BOQs,
+      // which are often laid out as narrative item descriptions in their
+      // own rows with quantities/rates in nearby rows or columns, rather
+      // than one clean header row naming every field (confirmed directly
+      // against a real 18-sheet tender BOQ). Rather than give up on those
+      // specific sheets, flatten ONLY the skipped sheets to plain text —
+      // never cover pages, preambles, or sheets already handled
+      // deterministically, which would waste the char budget and dilute
+      // the LLM's attention with irrelevant boilerplate (confirmed
+      // directly: a full-workbook flatten put "United Nations Office for
+      // Project Services" cover-page text and PREAMBLE legal prose ahead
+      // of actual narrative BOQ content within the 50,000-char cap).
+      const flattenedText = flattenXlsxToText(fileBuffer, { onlySheets: skippedSheetNames });
       if (!flattenedText || !flattenedText.trim()) {
+        // Deterministic pass may still have found real items on OTHER
+        // sheets even though the skipped ones had no extractable text —
+        // return those rather than an empty array.
         return res.status(200).json({
           fileName,
           fileType,
           rawText: null,
-          boqItems: [],
+          boqItems: items,
           clauses: null,
           meta: {
-            method: "deterministic-xlsx-empty",
+            method: items.length > 0 ? "deterministic-xlsx-partial" : "deterministic-xlsx-empty",
             sheetsWithData,
-            warnings: [...warnings, "No cell data found in any sheet."],
+            warnings: [...warnings, "No cell data found in the remaining sheets."],
             skippedNonItemRows,
           },
         });
@@ -157,23 +174,29 @@ export default async function handler(req, res) {
 
       const llmItems = await extractBoqWithLLM(flattenedText);
 
+      // Merge: deterministic items (free, high-confidence, from clean
+      // header-row sheets) plus LLM items (from narrative-layout sheets
+      // the deterministic pass couldn't parse). Neither replaces the
+      // other — a real tender file is genuinely a mix of both layouts.
+      const allItems = [...items, ...llmItems];
+
       return res.status(200).json({
         fileName,
         fileType,
-        // The flattened sheet text is returned as rawText so
-        // check-analysis.js can also ground clause/scope findings in it,
-        // same as a PDF/DOCX document would provide.
+        // The flattened sheet text (skipped sheets only) is returned as
+        // rawText so check-analysis.js can also ground clause/scope
+        // findings in it, same as a PDF/DOCX document would provide.
         rawText: flattenedText,
-        boqItems: llmItems,
+        boqItems: allItems,
         clauses: null, // xlsx BOQs don't carry contract clauses — no clause extraction attempted
         meta: {
-          method: llmItems.length > 0 ? "llm-xlsx-fallback" : "llm-xlsx-fallback-empty",
+          method: llmItems.length > 0 ? "deterministic-plus-llm-xlsx" : "deterministic-xlsx-partial",
           sheetsWithData,
           warnings: [
             ...warnings,
             llmItems.length > 0
-              ? `No standard BOQ header row was found — ${llmItems.length} item(s) extracted by AI from the raw sheet contents instead. Review carefully.`
-              : "No BOQ table detected by either standard parsing or AI extraction. Add line items manually below.",
+              ? `${items.length} item(s) from standard sheets + ${llmItems.length} item(s) AI-extracted from ${skippedSheetNames.length} narrative-layout sheet(s) (${skippedSheetNames.join(", ")}). Review AI-extracted items carefully.`
+              : `${items.length} item(s) from standard sheets. No items could be extracted from the remaining ${skippedSheetNames.length} sheet(s) even with AI assistance — add manually if needed.`,
           ],
           skippedNonItemRows,
         },
