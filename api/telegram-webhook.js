@@ -109,11 +109,27 @@ async function runAudit(buffer, fileName, baseUrl) {
       Authorization: `Bearer ${authToken}`,
     },
     body: JSON.stringify({
+      // check-analysis.js wraps these two in its own grounding/evidence
+      // scaffolding (see groundedSystemPrompt/groundedUserPrompt in that
+      // file) — they don't need to be elaborate, just a sensible base the
+      // endpoint's own grounding rules get appended to. This mirrors what
+      // the web UI's audit.tsx must be constructing before calling this
+      // same endpoint, kept intentionally minimal here since this bot has
+      // no UI to gather additional framing from the user.
+      systemPrompt:
+        "You are a forensic bid auditor for Ethiopian construction tenders. " +
+        "Analyze the supplied BOQ and document text for contractual risk, scope gaps, " +
+        "and compliance issues. Return a JSON object with fields: contractual_traps, " +
+        "scope_gaps, recommendation (one of PROCEED, PROCEED_WITH_CAUTION, DECLINE), " +
+        "and a brief executive_summary string.",
+      userPrompt:
+        `Audit this bid submission (${fileName}) and identify contractual risks and scope gaps.`,
       boqItems: extractData.boqItems,
-      contractValue: null, // Telegram flow has no form input for this —
-      // see note below on this limitation.
-      targetMargin: 15,
-      clauseTerms: extractData.clauseTerms || null,
+      documentText: extractData.rawText || null,
+      clauses: extractData.clauses || null,
+      contractValue: null, // No form input in the Telegram flow — see
+      // note in the module header. Arithmetic checks against a stated
+      // total won't run; per-line arithmetic checks still do.
     }),
   });
 
@@ -125,20 +141,27 @@ async function runAudit(buffer, fileName, baseUrl) {
   const analysisData = await analysisRes.json();
 
   const riskLine =
-    analysisData.riskScore === null
-      ? "Risk score: N/A (insufficient evidence coverage)"
-      : `Risk score: ${analysisData.riskScore}/100`;
+    analysisData.risk_score === null
+      ? "Risk score: N/A (insufficient evidence for a responsible score)"
+      : `Risk score: ${analysisData.risk_score}/100`;
+
+  const arithmeticCount = (analysisData.arithmetic_errors || []).length;
+  const trapCount = (analysisData.contractual_traps || []).length;
+  const scopeGapCount = (analysisData.scope_gaps || []).length;
+
+  const topIssues = [
+    ...(analysisData.contractual_traps || []).slice(0, 2).map((t) => t.description || t.title || JSON.stringify(t)),
+    ...(analysisData.arithmetic_errors || []).slice(0, 2).map((e) => e.description || JSON.stringify(e)),
+  ].slice(0, 3);
 
   const summary =
     `*BidSwift Audit — ${fileName}*\n\n` +
     `${extractData.boqItems.length} BOQ item(s) extracted\n` +
     `${riskLine}\n` +
-    `Arithmetic exposure: ${analysisData.arithmeticExposure ?? "N/A"} ETB\n\n` +
-    `Top signals:\n` +
-    (analysisData.topRiskSignals || [])
-      .slice(0, 3)
-      .map((s) => `• ${s}`)
-      .join("\n");
+    `Recommendation: ${analysisData.recommendation || "N/A"}\n` +
+    `${arithmeticCount} arithmetic finding(s), ${trapCount} contractual trap(s), ${scopeGapCount} scope gap(s)\n\n` +
+    (analysisData.executive_summary ? `${analysisData.executive_summary}\n\n` : "") +
+    (topIssues.length > 0 ? `Top issues:\n${topIssues.map((s) => `• ${s}`).join("\n")}` : "");
 
   return { summary, full: analysisData };
 }
