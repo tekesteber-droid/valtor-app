@@ -1,216 +1,231 @@
-// api/telegram-webhook.js
+// api/_lib/pdfExtractor.js
 //
-// Personal-testing convenience layer only — NOT a product feature. This is
-// a thin wrapper: it does no extraction or analysis of its own. It receives
-// a document from Telegram, forwards it to the existing /api/extract-boq
-// and /api/check-analysis endpoints (the same ones the web UI calls), and
-// relays the result back as a Telegram message. All real logic stays in
-// the endpoints already built and verified — this file must never grow
-// its own copy of extraction/analysis logic.
+// Server-side PDF → raw text extraction, with a scanned-document fallback.
+//
+// Strategy (cheapest/fastest first):
+//   1. pdf-parse — works for text-native PDFs (the majority of tender docs
+//      produced from Word/Excel/InDesign). Free, local, no API call.
+//   2. If pdf-parse yields near-zero text (a scanned/image-only PDF), fall
+//      back to rasterizing each page with pdfjs-dist + @napi-rs/canvas and
+//      running Gemini vision OCR on the page images. This is slower and
+//      costs an API call per page, so it is a fallback, not the default.
+//
+// This module NEVER invents document content — it either returns text that
+// came from the PDF's embedded text layer, or text that came back from
+// Gemini's vision OCR of the actual rendered page. If both fail, it returns
+// an empty string and a clear status the caller can surface to the user.
 
-const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
-const TELEGRAM_API = `https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}`;
+import { readFile } from "fs/promises";
 
-// Simple allowlist so this personal-testing bot doesn't become an open,
-// unauthenticated public endpoint for anyone who finds the bot username.
-// Set to your own Telegram numeric user ID (get it from @userinfobot).
-const ALLOWED_TELEGRAM_USER_IDS = (process.env.TELEGRAM_ALLOWED_USER_IDS || "")
-  .split(",")
-  .map((s) => s.trim())
-  .filter(Boolean);
+// Below this many extracted characters per page (on average), we treat the
+// PDF as scanned/image-only rather than text-native. Real tender PDFs with
+// actual embedded text comfortably clear this threshold; a scanned page run
+// through pdf-parse typically yields stray OCR artifacts from an embedded
+// low-quality text layer (or nothing at all) — well under this bar.
+const MIN_CHARS_PER_PAGE = 40;
 
-async function sendMessage(chatId, text) {
-  await fetch(`${TELEGRAM_API}/sendMessage`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ chat_id: chatId, text, parse_mode: "Markdown" }),
-  });
+// Hard cap on pages sent to Gemini vision OCR per document. Tender PDFs can
+// run 50-100+ pages including boilerplate (SPD terms, drawings, forms) that
+// don't contain BOQ/clause data — but we don't know which pages matter until
+// we've looked. Capping keeps worst-case latency/cost bounded on the free
+// tier; raise this once a paid Gemini tier is in place.
+const MAX_OCR_PAGES = 25;
+
+const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
+const GEMINI_VISION_MODEL = process.env.GEMINI_VISION_MODEL || "gemini-1.5-flash";
+
+function sleep(ms) {
+  return new Promise((r) => setTimeout(r, ms));
 }
 
-async function getFileBuffer(fileId) {
-  const fileInfoRes = await fetch(`${TELEGRAM_API}/getFile?file_id=${fileId}`);
-  const fileInfo = await fileInfoRes.json();
-  const filePath = fileInfo.result.file_path;
-  const fileUrl = `https://api.telegram.org/file/bot${TELEGRAM_BOT_TOKEN}/${filePath}`;
-  const fileRes = await fetch(fileUrl);
-  const arrayBuffer = await fileRes.arrayBuffer();
-  return { buffer: Buffer.from(arrayBuffer), fileName: filePath.split("/").pop() };
+/* ═══════════════════════════════════════════════════════════════════
+   Stage 1 — text-native extraction via pdf-parse
+   ═══════════════════════════════════════════════════════════════════ */
+
+async function extractWithPdfParse(buffer) {
+  // pdf-parse v2 exports a PDFParse class rather than a bare function.
+  const { PDFParse } = await import("pdf-parse");
+  const parser = new PDFParse({ data: buffer });
+  const result = await parser.getText();
+  await parser.destroy?.();
+
+  const text = result?.text || "";
+  const numPages = result?.total ?? result?.numpages ?? result?.numPages ?? 1;
+  return { text, numPages };
 }
 
-async function getServiceAuthToken() {
-  // extract-boq.js requires a Bearer token validated via
-  // supabaseAdmin.auth.getUser(token) — that's designed for real logged-in
-  // browser sessions, which this bot has none of. Rather than weaken
-  // extract-boq.js's auth check (a real security boundary for the actual
-  // product), this bot authenticates as a dedicated service user via
-  // Supabase's password grant, using credentials for a Supabase user
-  // created specifically for this purpose (not your personal login).
-  //
-  // Setup required (one-time, in Supabase dashboard):
-  //   1. Create a user, e.g. telegram-bot@bidswift.internal, with a strong
-  //      generated password — Authentication > Users > Add User.
-  //   2. Set TELEGRAM_BOT_SUPABASE_EMAIL / TELEGRAM_BOT_SUPABASE_PASSWORD
-  //      env vars to that user's credentials.
-  const email = process.env.TELEGRAM_BOT_SUPABASE_EMAIL;
-  const password = process.env.TELEGRAM_BOT_SUPABASE_PASSWORD;
-  const supabaseUrl = process.env.VITE_SUPABASE_URL;
-  const anonKey = process.env.VITE_SUPABASE_ANON_KEY;
+/* ═══════════════════════════════════════════════════════════════════
+   Stage 2 — scanned-PDF fallback: rasterize pages, OCR via Gemini vision
+   ═══════════════════════════════════════════════════════════════════ */
 
-  if (!email || !password) {
-    throw new Error(
-      "TELEGRAM_BOT_SUPABASE_EMAIL / TELEGRAM_BOT_SUPABASE_PASSWORD not set — the bot has no way to authenticate to extract-boq.js. See getServiceAuthToken() comment for setup."
-    );
-  }
+async function renderPageToPng(pdfDocument, pageNumber, scale = 2.0) {
+  // pdfjs-dist's legacy Node build works without a browser DOM, but still
+  // needs a canvas implementation — @napi-rs/canvas is the serverless-safe
+  // choice (prebuilt binary, no native compilation step at deploy time,
+  // unlike node-canvas which needs Cairo installed on the build image).
+  const { createCanvas } = await import("@napi-rs/canvas");
 
-  const res = await fetch(`${supabaseUrl}/auth/v1/token?grant_type=password`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json", apikey: anonKey },
-    body: JSON.stringify({ email, password }),
-  });
-  if (!res.ok) {
-    const txt = await res.text();
-    throw new Error(`Supabase auth failed for service bot user (${res.status}): ${txt.slice(0, 200)}`);
-  }
-  const data = await res.json();
-  return data.access_token;
+  const page = await pdfDocument.getPage(pageNumber);
+  const viewport = page.getViewport({ scale });
+  const canvas = createCanvas(viewport.width, viewport.height);
+  const context = canvas.getContext("2d");
+
+  await page.render({ canvasContext: context, viewport }).promise;
+  return canvas.toBuffer("image/png");
 }
 
-// Calls the SAME internal endpoints the web UI uses — no duplicated logic.
-async function runAudit(buffer, fileName, baseUrl) {
-  const authToken = await getServiceAuthToken();
+async function callGeminiVisionOcr(pngBuffer, pageLabel) {
+  const url =
+    `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_VISION_MODEL}:generateContent?key=${GEMINI_API_KEY}`;
 
-  const form = new FormData();
-  form.append("file", new Blob([buffer]), fileName);
+  const body = {
+    contents: [
+      {
+        role: "user",
+        parts: [
+          {
+            text:
+              "Transcribe ALL visible text on this scanned document page exactly as it appears, " +
+              "including every row of any table (preserve column order left-to-right). This is a " +
+              "page from an Ethiopian construction tender document — it may contain a Bill of " +
+              "Quantities table, contract clauses, or general tender text. Do not summarize, do not " +
+              "translate, do not omit rows for brevity. If the page is blank or unreadable, return " +
+              "an empty string. Return plain text only — no markdown formatting, no commentary.",
+          },
+          { inline_data: { mime_type: "image/png", data: pngBuffer.toString("base64") } },
+        ],
+      },
+    ],
+    generationConfig: { temperature: 0, maxOutputTokens: 4000 },
+  };
 
-  const extractRes = await fetch(`${baseUrl}/api/extract-boq`, {
-    method: "POST",
-    headers: { Authorization: `Bearer ${authToken}` },
-    body: form,
-  });
+  const maxRetries = 2;
+  for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    const res = await fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
 
-  if (!extractRes.ok) {
-    const errBody = await extractRes.json().catch(() => ({}));
-    throw new Error(`extract-boq returned ${extractRes.status}: ${errBody.error || "unknown error"}`);
+    if (res.ok) {
+      const data = await res.json();
+      return data.candidates?.[0]?.content?.parts?.[0]?.text || "";
+    }
+
+    const status = res.status;
+    const retryable = status === 429 || status >= 500;
+    if (!retryable || attempt === maxRetries) {
+      const txt = await res.text();
+      console.error(`[pdfExtractor] Gemini OCR failed on ${pageLabel} (${status}): ${txt.slice(0, 300)}`);
+      return ""; // Don't fail the whole document over one bad page.
+    }
+
+    const wait = Math.min(1000 * 2 ** attempt, 15000);
+    await sleep(wait);
   }
+  return "";
+}
 
-  const extractData = await extractRes.json();
-
-  if (!extractData.boqItems || extractData.boqItems.length === 0) {
+async function extractWithOcrFallback(buffer) {
+  if (!GEMINI_API_KEY) {
     return {
-      summary: `Extraction returned 0 BOQ items.\n\n${extractData.warning || extractData.meta?.warnings?.join(" ") || "No further detail available."}`,
-      full: extractData,
+      text: "",
+      numPages: 0,
+      ocrUsed: false,
+      warning: "Document appears to be scanned/image-based, and no GEMINI_API_KEY is configured for OCR fallback.",
     };
   }
 
-  const analysisRes = await fetch(`${baseUrl}/api/check-analysis`, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${authToken}`,
-    },
-    body: JSON.stringify({
-      // check-analysis.js wraps these two in its own grounding/evidence
-      // scaffolding (see groundedSystemPrompt/groundedUserPrompt in that
-      // file) — they don't need to be elaborate, just a sensible base the
-      // endpoint's own grounding rules get appended to. This mirrors what
-      // the web UI's audit.tsx must be constructing before calling this
-      // same endpoint, kept intentionally minimal here since this bot has
-      // no UI to gather additional framing from the user.
-      systemPrompt:
-        "You are a forensic bid auditor for Ethiopian construction tenders. " +
-        "Analyze the supplied BOQ and document text for contractual risk, scope gaps, " +
-        "and compliance issues. Return a JSON object with fields: contractual_traps, " +
-        "scope_gaps, recommendation (one of PROCEED, PROCEED_WITH_CAUTION, DECLINE), " +
-        "and a brief executive_summary string.",
-      userPrompt:
-        `Audit this bid submission (${fileName}) and identify contractual risks and scope gaps.`,
-      boqItems: extractData.boqItems,
-      documentText: extractData.rawText || null,
-      clauses: extractData.clauses || null,
-      contractValue: null, // No form input in the Telegram flow — see
-      // note in the module header. Arithmetic checks against a stated
-      // total won't run; per-line arithmetic checks still do.
-    }),
-  });
+  // pdfjs-dist's legacy build is the one meant for Node (no DOM APIs).
+  // It does a strict instanceof/type check on `data` — a Node Buffer,
+  // despite being a Uint8Array subclass at runtime, is rejected with
+  // "Please provide binary data as Uint8Array, rather than Buffer."
+  // Wrapping in a plain Uint8Array view (no copy — same underlying memory)
+  // satisfies the check without any real cost.
+  const pdfjsLib = await import("pdfjs-dist/legacy/build/pdf.mjs");
+  const uint8Data = buffer instanceof Uint8Array && buffer.constructor === Uint8Array
+    ? buffer
+    : new Uint8Array(buffer.buffer, buffer.byteOffset, buffer.byteLength);
+  const loadingTask = pdfjsLib.getDocument({ data: uint8Data });
+  const pdfDocument = await loadingTask.promise;
 
-  if (!analysisRes.ok) {
-    const errBody = await analysisRes.json().catch(() => ({}));
-    throw new Error(`check-analysis returned ${analysisRes.status}: ${errBody.error || "unknown error"}`);
+  const totalPages = pdfDocument.numPages;
+  const pagesToProcess = Math.min(totalPages, MAX_OCR_PAGES);
+  const truncated = totalPages > MAX_OCR_PAGES;
+
+  const pageTexts = [];
+  for (let i = 1; i <= pagesToProcess; i++) {
+    const png = await renderPageToPng(pdfDocument, i);
+    const pageText = await callGeminiVisionOcr(png, `page ${i}/${totalPages}`);
+    if (pageText.trim()) pageTexts.push(`--- Page ${i} ---\n${pageText.trim()}`);
   }
 
-  const analysisData = await analysisRes.json();
-
-  const riskLine =
-    analysisData.risk_score === null
-      ? "Risk score: N/A (insufficient evidence for a responsible score)"
-      : `Risk score: ${analysisData.risk_score}/100`;
-
-  const arithmeticCount = (analysisData.arithmetic_errors || []).length;
-  const trapCount = (analysisData.contractual_traps || []).length;
-  const scopeGapCount = (analysisData.scope_gaps || []).length;
-
-  const topIssues = [
-    ...(analysisData.contractual_traps || []).slice(0, 2).map((t) => t.description || t.title || JSON.stringify(t)),
-    ...(analysisData.arithmetic_errors || []).slice(0, 2).map((e) => e.description || JSON.stringify(e)),
-  ].slice(0, 3);
-
-  const summary =
-    `*BidSwift Audit — ${fileName}*\n\n` +
-    `${extractData.boqItems.length} BOQ item(s) extracted\n` +
-    `${riskLine}\n` +
-    `Recommendation: ${analysisData.recommendation || "N/A"}\n` +
-    `${arithmeticCount} arithmetic finding(s), ${trapCount} contractual trap(s), ${scopeGapCount} scope gap(s)\n\n` +
-    (analysisData.executive_summary ? `${analysisData.executive_summary}\n\n` : "") +
-    (topIssues.length > 0 ? `Top issues:\n${topIssues.map((s) => `• ${s}`).join("\n")}` : "");
-
-  return { summary, full: analysisData };
+  return {
+    text: pageTexts.join("\n\n"),
+    numPages: totalPages,
+    ocrUsed: true,
+    warning: truncated
+      ? `Document has ${totalPages} pages; only the first ${MAX_OCR_PAGES} were OCR'd. Re-upload a trimmed extract if key content is beyond page ${MAX_OCR_PAGES}.`
+      : null,
+  };
 }
 
-export default async function handler(req, res) {
-  if (req.method !== "POST") {
-    return res.status(200).json({ ok: true }); // Telegram just needs 200 on GET pings.
-  }
+/* ═══════════════════════════════════════════════════════════════════
+   Public entry point
+   ═══════════════════════════════════════════════════════════════════ */
 
-  const update = req.body;
-  const message = update.message;
-  if (!message) return res.status(200).json({ ok: true });
-
-  const chatId = message.chat.id;
-  const userId = String(message.from?.id || "");
-
-  if (ALLOWED_TELEGRAM_USER_IDS.length > 0 && !ALLOWED_TELEGRAM_USER_IDS.includes(userId)) {
-    // Silently ignore rather than reply — don't confirm to strangers that
-    // this bot exists and is listening.
-    console.warn(`[telegram-webhook] Ignored message from non-allowlisted user ${userId}`);
-    return res.status(200).json({ ok: true });
-  }
-
-  if (message.text === "/start") {
-    await sendMessage(chatId, "BidSwift AI — send me a BOQ/tender PDF or XLSX and I'll run it through the audit pipeline.");
-    return res.status(200).json({ ok: true });
-  }
-
-  const doc = message.document;
-  if (!doc) {
-    await sendMessage(chatId, "Send a PDF or XLSX file to audit.");
-    return res.status(200).json({ ok: true });
-  }
-
+/**
+ * Extracts raw text from a PDF buffer, using OCR only if the text layer is
+ * absent or negligible (i.e. the PDF is scanned/image-based).
+ *
+ * @param {Buffer} buffer — raw PDF file bytes
+ * @returns {Promise<{ text: string, method: "text-layer"|"ocr"|"none", numPages: number, warning: string|null }>}
+ */
+export async function extractPdfText(buffer) {
+  let textLayerResult;
   try {
-    await sendMessage(chatId, `Received ${doc.file_name} — running audit, this can take 20-30s...`);
-
-    const { buffer, fileName } = await getFileBuffer(doc.file_id);
-
-    // baseUrl must point at THIS SAME deployment so extract-boq/check-analysis
-    // resolve correctly regardless of preview vs. production URL.
-    const baseUrl = `https://${req.headers.host}`;
-    const result = await runAudit(buffer, fileName, baseUrl);
-
-    await sendMessage(chatId, result.summary);
+    textLayerResult = await extractWithPdfParse(buffer);
   } catch (err) {
-    console.error("[telegram-webhook] Audit failed:", err.message, err.stack);
-    await sendMessage(chatId, `Audit failed: ${err.message}`);
+    // This error was previously swallowed silently — the caller only ever
+    // saw the downstream OCR fallback's failure, never the real reason
+    // pdf-parse itself failed on a text-native PDF in production. Surface
+    // it so a genuine pdf-parse regression isn't masked by an OCR error
+    // for a document that never should have needed OCR in the first place.
+    console.error("[pdfExtractor] pdf-parse failed:", err.message, err.stack);
+    textLayerResult = { text: "", numPages: 0 };
   }
 
-  return res.status(200).json({ ok: true });
+  const { text, numPages } = textLayerResult;
+  const avgCharsPerPage = numPages > 0 ? text.length / numPages : text.length;
+
+  if (avgCharsPerPage >= MIN_CHARS_PER_PAGE) {
+    return { text, method: "text-layer", numPages, warning: null };
+  }
+
+  // Text layer is empty or negligible — likely a scanned document. Fall
+  // back to OCR rather than silently returning near-nothing.
+  console.log(`[pdfExtractor] Text layer yielded ${Math.round(avgCharsPerPage)} chars/page — falling back to OCR`);
+  try {
+    const ocrResult = await extractWithOcrFallback(buffer);
+    if (ocrResult.text.trim()) {
+      return { text: ocrResult.text, method: "ocr", numPages: ocrResult.numPages, warning: ocrResult.warning };
+    }
+    return {
+      text: "",
+      method: "none",
+      numPages,
+      warning: ocrResult.warning || "Could not extract readable text from this PDF, even via OCR.",
+    };
+  } catch (err) {
+    console.error("[pdfExtractor] OCR fallback failed:", err.message, err.stack);
+    return {
+      text,
+      method: "none",
+      numPages,
+      warning: `This looks like a scanned PDF and OCR extraction failed (${err.message}). Add BOQ line items manually below.`,
+    };
+  }
 }
+
+// Exposed for local/manual testing (scripts/test-pdf-extraction.mjs).
+export const __internal = { extractWithPdfParse, extractWithOcrFallback };
