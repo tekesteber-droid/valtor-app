@@ -1,4 +1,4 @@
-// api/lib/pdfExtractor.js
+// api/_lib/pdfExtractor.js
 //
 // Server-side PDF → raw text extraction, with a scanned-document fallback.
 //
@@ -137,8 +137,16 @@ async function extractWithOcrFallback(buffer) {
   }
 
   // pdfjs-dist's legacy build is the one meant for Node (no DOM APIs).
+  // It does a strict instanceof/type check on `data` — a Node Buffer,
+  // despite being a Uint8Array subclass at runtime, is rejected with
+  // "Please provide binary data as Uint8Array, rather than Buffer."
+  // Wrapping in a plain Uint8Array view (no copy — same underlying memory)
+  // satisfies the check without any real cost.
   const pdfjsLib = await import("pdfjs-dist/legacy/build/pdf.mjs");
-  const loadingTask = pdfjsLib.getDocument({ data: buffer });
+  const uint8Data = buffer instanceof Uint8Array && buffer.constructor === Uint8Array
+    ? buffer
+    : new Uint8Array(buffer.buffer, buffer.byteOffset, buffer.byteLength);
+  const loadingTask = pdfjsLib.getDocument({ data: uint8Data });
   const pdfDocument = await loadingTask.promise;
 
   const totalPages = pdfDocument.numPages;
@@ -178,7 +186,12 @@ export async function extractPdfText(buffer) {
   try {
     textLayerResult = await extractWithPdfParse(buffer);
   } catch (err) {
-    console.error("[pdfExtractor] pdf-parse failed:", err.message);
+    // This error was previously swallowed silently — the caller only ever
+    // saw the downstream OCR fallback's failure, never the real reason
+    // pdf-parse itself failed on a text-native PDF in production. Surface
+    // it so a genuine pdf-parse regression isn't masked by an OCR error
+    // for a document that never should have needed OCR in the first place.
+    console.error("[pdfExtractor] pdf-parse failed:", err.message, err.stack);
     textLayerResult = { text: "", numPages: 0 };
   }
 
@@ -204,7 +217,7 @@ export async function extractPdfText(buffer) {
       warning: ocrResult.warning || "Could not extract readable text from this PDF, even via OCR.",
     };
   } catch (err) {
-    console.error("[pdfExtractor] OCR fallback failed:", err.message);
+    console.error("[pdfExtractor] OCR fallback failed:", err.message, err.stack);
     return {
       text,
       method: "none",
