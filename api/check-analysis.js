@@ -393,7 +393,40 @@ export default async function handler(req, res) {
     // Extract the LLM's JSON from the response
     let raw = data.choices?.[0]?.message?.content || "{}";
     raw = raw.replace(/```json/g, "").replace(/```/g, "").trim();
-    const analysis = JSON.parse(raw);
+
+    // Defensive parse — some free-tier/routed models (confirmed live on
+    // openrouter/free) ignore response_format:{type:"json_object"} and
+    // return conversational prose ("Here's the analysis...") instead of
+    // raw JSON, despite the explicit instruction. Rather than let that
+    // crash the whole audit with an uncaught 500, try to salvage the
+    // first {...} block from the response before giving up. This mirrors
+    // the same salvage philosophy as parseJsonWithTruncationSalvage() in
+    // boqExtractor.js — a malformed provider response should degrade
+    // gracefully, not take down the endpoint.
+    let analysis;
+    try {
+      analysis = JSON.parse(raw);
+    } catch (parseErr) {
+      const jsonMatch = raw.match(/\{[\s\S]*\}/);
+      if (jsonMatch) {
+        try {
+          analysis = JSON.parse(jsonMatch[0]);
+          console.warn(`[check-analysis] Provider ${provider.name}/${provider.model} ignored response_format — salvaged JSON from prose wrapper.`);
+        } catch (salvageErr) {
+          console.error(`[check-analysis] JSON salvage also failed: ${salvageErr.message}`);
+        }
+      }
+      if (!analysis) {
+        // Genuinely unrecoverable — return a real 502 (bad upstream
+        // response) instead of a bare crash, so callers (web UI, bot)
+        // can show "please retry" instead of a silent failure.
+        console.error(`[check-analysis] Provider ${provider.name}/${provider.model} returned non-JSON, unsalvageable: "${raw.slice(0, 120)}..."`);
+        return res.status(502).json({
+          error: "AI provider returned an invalid response. Please retry the audit.",
+          detail: `Provider ${provider.name} did not return valid JSON.`,
+        });
+      }
+    }
 
     // Ensure arrays exist
     analysis.contractual_traps = Array.isArray(analysis.contractual_traps) ? analysis.contractual_traps : [];

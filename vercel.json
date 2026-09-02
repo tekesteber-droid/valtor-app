@@ -8,6 +8,10 @@
   "functions": {
     "api/extract-boq.js": {
       "includeFiles": "node_modules/{pdfjs-dist,pdf-parse}/**"
+    },
+    "api/telegram-webhook.js": {
+      "memory": 1536,
+      "maxDuration": 60
     }
   }
 }

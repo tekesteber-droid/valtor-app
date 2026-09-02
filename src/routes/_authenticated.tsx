@@ -15,7 +15,7 @@ export const Route = createFileRoute("/_authenticated")({
       });
     }
 
-    const redirectToAuth = (reason?: "network" | "session") => {
+    const redirectToAuth = (reason?: "network" | "session"): never => {
       throw redirect({
         to: "/auth",
         search: {
@@ -30,18 +30,30 @@ export const Route = createFileRoute("/_authenticated")({
     try {
       const { data: sessionData, error: sessionError } = await supabase.auth.getSession();
 
-      if (sessionError || !sessionData.session) {
+      const session = sessionData.session;
+
+      if (sessionError) {
+        redirectToAuth("session");
+      }
+
+      if (!session) {
         redirectToAuth("session");
       }
 
       const { data: userData, error: userError } = await supabase.auth.getUser();
+      const user = userData.user;
 
-      if (userError || !userData.user) {
+      if (userError) {
         await supabase.auth.signOut({ scope: "local" });
         redirectToAuth("session");
       }
 
-      sessionUserEmail = userData.user.email ?? sessionData.session.user.email;
+      if (!user) {
+        await supabase.auth.signOut({ scope: "local" });
+        redirectToAuth("session");
+      }
+
+      sessionUserEmail = user!.email ?? session!.user.email;
     } catch (error) {
       if (error instanceof Response) throw error;
       redirectToAuth("network");
