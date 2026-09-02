@@ -9,26 +9,25 @@
 // conversation flow around those endpoints, and (2) generate/deliver the
 // PDF report via reportGenerator.js.
 //
-// ── Why this file acks Telegram immediately ────────────────────────────
+// ── On the retry-loop bug and how it's actually handled ────────────────
 // Telegram redelivers a webhook update if it doesn't get a 200 response
-// back quickly. A full audit run (extract + LLM analysis + PDF render)
-// can take 30-90+ seconds — far longer than Telegram's delivery timeout.
-// The earlier version of this file didn't send its 200 until the ENTIRE
-// audit finished, so Telegram kept re-sending the same update, and each
-// resend restarted a brand-new, expensive audit run from scratch. Real
-// symptom seen in testing: 5+ duplicate "extracted..." progress messages
-// over several minutes, never resolving.
+// back within its own timeout. A full audit run (extract + LLM analysis
+// + PDF render) can take 30-90+ seconds, comfortably longer than that.
 //
-// Fix has two independent layers:
-//   1. Ack fast: res.status(200) is sent BEFORE any slow work starts.
-//      Vercel keeps a serverless function alive until pending work in
-//      the event loop finishes, even after the response is sent — so the
-//      audit still completes, Telegram just isn't left waiting on it.
-//   2. Dedup as a safety net: every Telegram update carries a unique,
-//      monotonically increasing update_id. If the same update_id is ever
-//      seen twice (rare, but possible on network retries even with a
-//      fast ack), the second delivery is a no-op instead of a second
-//      audit run.
+// A first attempt at fixing this tried to send res.status(200) BEFORE
+// running the audit, then keep executing afterward — on the assumption
+// that Vercel keeps a Node serverless function alive until pending async
+// work drains. That assumption was wrong in practice: once the response
+// was sent, the function's execution context froze immediately, so nothing
+// after res.status(200).json(...) ever actually ran (confirmed live:
+// /start acked cleanly in the logs, but the bot never replied).
+//
+// The actual fix here is simpler: run the full flow to completion before
+// responding (same as the very first version of this file), and rely on
+// update_id deduplication (below) to absorb Telegram's retries as safe
+// no-ops instead of re-running the audit. maxDuration is set to 60s in
+// vercel.json to give the full flow real headroom before Vercel itself
+// would time the function out.
 
 import { createClient } from "@supabase/supabase-js";
 import { generateAuditPdf } from "./_lib/reportGenerator.js";
@@ -332,6 +331,25 @@ async function processAuditInBackground(chatId, userId, doc, host) {
 }
 
 // ─── Request handler ────────────────────────────────────────────────────
+//
+// IMPORTANT — why this does NOT ack-then-continue:
+// An earlier version of this file sent res.status(200) immediately and
+// then kept executing (sendMessage calls, the audit, etc.) afterward,
+// on the assumption that Vercel keeps a Node serverless function alive
+// until pending async work drains. That assumption was wrong in practice
+// — after the response was sent, the function's execution context froze
+// immediately, so nothing after res.status(200).json(...) ever actually
+// ran. Real symptom: /start acked with a clean 200 in the logs, but the
+// bot never sent its reply.
+//
+// The fix: run the full flow to completion BEFORE responding, same as
+// before this whole retry-loop investigation started. What actually
+// solves the duplicate-audit problem is the update_id dedup check below
+// — if Telegram retries a slow request, the retry's update_id has
+// already been seen and is swallowed as a no-op instead of re-running
+// the audit. maxDuration is set to 60s in vercel.json to give the full
+// extract+analyze+PDF flow real headroom before Vercel itself would time
+// the function out.
 
 export default async function handler(req, res) {
   if (req.method !== "POST") {
@@ -364,11 +382,6 @@ export default async function handler(req, res) {
     return;
   }
 
-  // ── Ack Telegram FIRST, before any slow work ────────────────────────
-  res.status(200).json({ ok: true });
-
-  // Everything below runs after the response has been sent. Vercel keeps
-  // the function alive until this async work resolves.
   await registerCommands();
 
   if (message.text === "/start") {
@@ -380,11 +393,13 @@ export default async function handler(req, res) {
       "You'll get a full PDF report automatically.\n\n" +
       "Use /audit to get started, or just send a file directly. Use /help for details on how the audit works."
     );
+    res.status(200).json({ ok: true });
     return;
   }
 
   if (message.text === "/audit") {
     await sendMessage(chatId, "Send the BOQ/tender file now — PDF or XLSX.");
+    res.status(200).json({ ok: true });
     return;
   }
 
@@ -398,14 +413,17 @@ export default async function handler(req, res) {
       "This is decision support, not a decision-maker — every finding is meant to be checked, not blindly trusted. " +
       "Pricing is benchmarked against a historical government rate schedule, not live market prices."
     );
+    res.status(200).json({ ok: true });
     return;
   }
 
   const doc = message.document;
   if (!doc) {
     await sendMessage(chatId, "Send a PDF or XLSX file to audit, or use /help to see how this works.");
+    res.status(200).json({ ok: true });
     return;
   }
 
   await processAuditInBackground(chatId, userId, doc, req.headers.host);
+  res.status(200).json({ ok: true });
 }
