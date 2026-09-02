@@ -1,15 +1,34 @@
 // api/telegram-webhook.js
 //
 // The Telegram bot is a real lead-facing product surface, not a personal
-// testing convenience (see SESSION_HANDOFF from 2026-08-30 for the
-// original "personal testing only" scoping — that framing is now
-// superseded, this file is designed as the primary UX for early leads).
+// testing convenience.
 //
 // This file does no extraction or analysis of its own — all real logic
 // stays in /api/extract-boq and /api/check-analysis, the same endpoints
 // the web UI calls. This file's only jobs are: (1) drive a good Telegram
 // conversation flow around those endpoints, and (2) generate/deliver the
 // PDF report via reportGenerator.js.
+//
+// ── Why this file acks Telegram immediately ────────────────────────────
+// Telegram redelivers a webhook update if it doesn't get a 200 response
+// back quickly. A full audit run (extract + LLM analysis + PDF render)
+// can take 30-90+ seconds — far longer than Telegram's delivery timeout.
+// The earlier version of this file didn't send its 200 until the ENTIRE
+// audit finished, so Telegram kept re-sending the same update, and each
+// resend restarted a brand-new, expensive audit run from scratch. Real
+// symptom seen in testing: 5+ duplicate "extracted..." progress messages
+// over several minutes, never resolving.
+//
+// Fix has two independent layers:
+//   1. Ack fast: res.status(200) is sent BEFORE any slow work starts.
+//      Vercel keeps a serverless function alive until pending work in
+//      the event loop finishes, even after the response is sent — so the
+//      audit still completes, Telegram just isn't left waiting on it.
+//   2. Dedup as a safety net: every Telegram update carries a unique,
+//      monotonically increasing update_id. If the same update_id is ever
+//      seen twice (rare, but possible on network retries even with a
+//      fast ack), the second delivery is a no-op instead of a second
+//      audit run.
 
 import { createClient } from "@supabase/supabase-js";
 import { generateAuditPdf } from "./_lib/reportGenerator.js";
@@ -22,13 +41,26 @@ const supabaseAdmin = createClient(
   process.env.SUPABASE_SERVICE_ROLE_KEY
 );
 
-// Simple allowlist so this doesn't become an open, unauthenticated public
-// endpoint for anyone who finds the bot username. Set to your own and
-// pilot testers' Telegram numeric user IDs (get via @userinfobot).
 const ALLOWED_TELEGRAM_USER_IDS = (process.env.TELEGRAM_ALLOWED_USER_IDS || "")
   .split(",")
   .map((s) => s.trim())
   .filter(Boolean);
+
+// In-memory recent-update cache, per warm function instance. Best-effort
+// first line of defense (cheap, no DB round trip) — the fast-ack fix
+// itself is the durable fix; this is a secondary safety net.
+const recentUpdateIds = new Set();
+const MAX_RECENT_IDS = 500;
+
+function seenRecently(updateId) {
+  if (recentUpdateIds.has(updateId)) return true;
+  recentUpdateIds.add(updateId);
+  if (recentUpdateIds.size > MAX_RECENT_IDS) {
+    const first = recentUpdateIds.values().next().value;
+    recentUpdateIds.delete(first);
+  }
+  return false;
+}
 
 // ─── Telegram API helpers ──────────────────────────────────────────────
 
@@ -41,7 +73,7 @@ async function sendMessage(chatId, text, opts = {}) {
     body: JSON.stringify(body),
   });
   const data = await res.json();
-  return data.result; // includes message_id, useful for editMessageText later
+  return data.result;
 }
 
 async function editMessageText(chatId, messageId, text, opts = {}) {
@@ -69,14 +101,6 @@ async function sendDocument(chatId, buffer, fileName, caption) {
   }
 }
 
-async function answerCallbackQuery(callbackQueryId, text) {
-  await fetch(`${TELEGRAM_API}/answerCallbackQuery`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ callback_query_id: callbackQueryId, text, show_alert: false }),
-  });
-}
-
 async function getFileBuffer(fileId) {
   const fileInfoRes = await fetch(`${TELEGRAM_API}/getFile?file_id=${fileId}`);
   const fileInfo = await fileInfoRes.json();
@@ -87,9 +111,12 @@ async function getFileBuffer(fileId) {
   return { buffer: Buffer.from(arrayBuffer), fileName: filePath.split("/").pop() };
 }
 
-// One-time command registration. Cheap to call on every cold start —
-// Telegram no-ops if the command list is unchanged. Not worth gating
-// behind a "first run only" check for the API cost involved.
+// setMyCommands is what actually powers the "/" menu button and the
+// command autocomplete list in the Telegram client — this IS the same
+// mechanism BotFather's /setcommands flow uses under the hood. BotFather
+// is a chat-based UI wrapper around this same Bot API call, not a
+// separate "real" registration path. Nothing further needs to be
+// configured in BotFather itself for the command menu to work.
 async function registerCommands() {
   await fetch(`${TELEGRAM_API}/setMyCommands`, {
     method: "POST",
@@ -107,20 +134,13 @@ async function registerCommands() {
 // ─── Auth to internal endpoints ────────────────────────────────────────
 
 async function getServiceAuthToken() {
-  // extract-boq.js requires a Bearer token validated via
-  // supabaseAdmin.auth.getUser(token) — designed for real logged-in
-  // browser sessions, which this bot has none of. Authenticates as a
-  // dedicated service user via Supabase's password grant instead of
-  // weakening the real auth boundary on extract-boq.js.
   const email = process.env.TELEGRAM_BOT_SUPABASE_EMAIL;
   const password = process.env.TELEGRAM_BOT_SUPABASE_PASSWORD;
   const supabaseUrl = process.env.VITE_SUPABASE_URL;
   const anonKey = process.env.VITE_SUPABASE_ANON_KEY;
 
   if (!email || !password) {
-    throw new Error(
-      "TELEGRAM_BOT_SUPABASE_EMAIL / TELEGRAM_BOT_SUPABASE_PASSWORD not set — see getServiceAuthToken() comment."
-    );
+    throw new Error("TELEGRAM_BOT_SUPABASE_EMAIL / TELEGRAM_BOT_SUPABASE_PASSWORD not set.");
   }
 
   const res = await fetch(`${supabaseUrl}/auth/v1/token?grant_type=password`, {
@@ -138,10 +158,6 @@ async function getServiceAuthToken() {
 
 // ─── Core audit flow ────────────────────────────────────────────────────
 
-// Calls the SAME internal endpoints the web UI uses — no duplicated
-// extraction/analysis logic. progressCb lets the caller show staged
-// status updates in Telegram while this runs, mirroring the web UI's
-// LOADING_STEPS in audit.tsx.
 async function runAudit(buffer, fileName, baseUrl, progressCb) {
   const authToken = await getServiceAuthToken();
 
@@ -183,41 +199,52 @@ async function runAudit(buffer, fileName, baseUrl, progressCb) {
         "You are a forensic bid auditor for Ethiopian construction tenders. " +
         "Analyze the supplied BOQ and document text for contractual risk, scope gaps, " +
         "and compliance issues. Return a JSON object with fields: contractual_traps, " +
-        "scope_gaps, recommendation (one of PROCEED, PROCEED_WITH_CAUTION, DECLINE), " +
+        "scope_gaps, recommendation (REQUIRED — must be exactly one of: PROCEED, " +
+        "PROCEED_WITH_CAUTION, DECLINE — never omit this field), " +
         "and a brief executive_summary string.",
       userPrompt:
         `Audit this bid submission (${fileName}) and identify contractual risks and scope gaps.`,
       boqItems: extractData.boqItems,
       documentText: extractData.rawText || null,
       clauses: extractData.clauses || null,
-      // No form input in the Telegram flow to collect a stated contract
-      // total — the grand-total-mismatch check therefore doesn't run via
-      // this path. Per-line arithmetic checks still do. Known, accepted
-      // gap versus the web UI (see SESSION_HANDOFF).
       contractValue: null,
     }),
   });
 
   if (!analysisRes.ok) {
     const errBody = await analysisRes.json().catch(() => ({}));
-    // check-analysis.js now returns 502 with a real message for
-    // unsalvageable provider responses (see the JSON-parse hardening
-    // added alongside this bot rewrite) instead of a bare 500 — surface
-    // that message directly so a retry suggestion actually makes sense.
     throw new Error(`${errBody.error || `check-analysis returned ${analysisRes.status}`}`);
   }
 
   const analysisData = await analysisRes.json();
+
+  // Code-level fallback for a field the LLM sometimes omits (seen live:
+  // a "successful" run with a valid risk_score but no recommendation
+  // key at all). Better to derive a conservative default from the score
+  // than show the contractor a bare "N/A" with no explanation.
+  if (!analysisData.recommendation) {
+    const score = analysisData.risk_score;
+    analysisData.recommendation =
+      score === null || score === undefined
+        ? "PROCEED_WITH_CAUTION"
+        : score >= 65
+        ? "DECLINE"
+        : score >= 35
+        ? "PROCEED_WITH_CAUTION"
+        : "PROCEED";
+    analysisData._recommendation_inferred = true;
+  }
+
   return { ok: true, extractData, analysisData };
 }
 
-function buildShortMessage(fileName, extractData, analysisData) {
+function buildResultCaption(fileName, extractData, analysisData) {
   const riskLine =
     analysisData.risk_score === null || analysisData.risk_score === undefined
       ? "Risk score: N/A (insufficient evidence for a responsible score)"
       : `Risk score: *${analysisData.risk_score}/100*`;
 
-  const rec = (analysisData.recommendation || "N/A").replace(/_/g, " ");
+  const rec = (analysisData.recommendation || "PROCEED_WITH_CAUTION").replace(/_/g, " ");
   const oneLiner = (analysisData.executive_summary || "").split(/(?<=[.!?])\s/)[0] || "";
 
   return (
@@ -226,127 +253,19 @@ function buildShortMessage(fileName, extractData, analysisData) {
     `${riskLine}\n` +
     `Recommendation: *${rec}*\n\n` +
     (oneLiner ? `${oneLiner}\n\n` : "") +
-    `Tap below for the full forensic report — findings, contractual risk register, and pricing variance, ` +
-    `evidence-linked to source.`
+    `📄 Full forensic report attached below — every finding evidence-linked to source.`
   );
 }
 
-// ─── Request handler ────────────────────────────────────────────────────
-
-export default async function handler(req, res) {
-  if (req.method !== "POST") {
-    return res.status(200).json({ ok: true }); // Telegram GET pings just need a 200.
-  }
-
-  const update = req.body;
-
-  // ── Callback query: "View Full Report" button tap ──────────────────
-  if (update.callback_query) {
-    const cq = update.callback_query;
-    const userId = String(cq.from?.id || "");
-    if (ALLOWED_TELEGRAM_USER_IDS.length > 0 && !ALLOWED_TELEGRAM_USER_IDS.includes(userId)) {
-      await answerCallbackQuery(cq.id, "Not authorized.");
-      return res.status(200).json({ ok: true });
-    }
-
-    const chatId = cq.message.chat.id;
-    const data = cq.data || "";
-    const match = data.match(/^report:(.+)$/);
-
-    if (!match) {
-      await answerCallbackQuery(cq.id);
-      return res.status(200).json({ ok: true });
-    }
-
-    const cacheId = match[1];
-    await answerCallbackQuery(cq.id, "Generating PDF...");
-
-    try {
-      const { data: row, error } = await supabaseAdmin
-        .from("telegram_audit_cache")
-        .select("analysis, file_name, project_name")
-        .eq("id", cacheId)
-        .single();
-
-      if (error || !row) {
-        await sendMessage(chatId, "This report has expired — please re-run the audit to get a fresh one.");
-        return res.status(200).json({ ok: true });
-      }
-
-      const pdfBuffer = await generateAuditPdf(row.analysis, {
-        fileName: row.file_name,
-        generatedAt: new Date().toISOString().slice(0, 16).replace("T", " ") + " UTC",
-      });
-
-      const pdfName = `BidSwift-Audit-${(row.project_name || row.file_name || "report").replace(/[^a-zA-Z0-9-_]/g, "_")}.pdf`;
-      await sendDocument(chatId, pdfBuffer, pdfName, "📄 Full forensic audit report — findings evidence-linked to source.");
-    } catch (err) {
-      console.error("[telegram-webhook] PDF generation failed:", err.message, err.stack);
-      await sendMessage(chatId, `Couldn't generate the PDF report: ${err.message}. Please try again.`);
-    }
-
-    return res.status(200).json({ ok: true });
-  }
-
-  // ── Regular message ─────────────────────────────────────────────────
-  const message = update.message;
-  if (!message) return res.status(200).json({ ok: true });
-
-  const chatId = message.chat.id;
-  const userId = String(message.from?.id || "");
-
-  if (ALLOWED_TELEGRAM_USER_IDS.length > 0 && !ALLOWED_TELEGRAM_USER_IDS.includes(userId)) {
-    // Silently ignore rather than reply — don't confirm to strangers that
-    // this bot exists and is listening.
-    console.warn(`[telegram-webhook] Ignored message from non-allowlisted user ${userId}`);
-    return res.status(200).json({ ok: true });
-  }
-
-  await registerCommands();
-
-  if (message.text === "/start") {
-    await sendMessage(
-      chatId,
-      "*BidSwift AI* — pre-bid forensic audit for Ethiopian construction tenders.\n\n" +
-      "Send me a BOQ/tender document (PDF or XLSX) and I'll check it for arithmetic errors, " +
-      "contractual risk, scope gaps, and pricing deviation against the official government rate schedule.\n\n" +
-      "Use /audit to get started, or just send a file directly. Use /help for details on how the audit works."
-    );
-    return res.status(200).json({ ok: true });
-  }
-
-  if (message.text === "/audit") {
-    await sendMessage(chatId, "Send the BOQ/tender file now — PDF or XLSX.");
-    return res.status(200).json({ ok: true });
-  }
-
-  if (message.text === "/help") {
-    await sendMessage(
-      chatId,
-      "*How it works*\n\n" +
-      "1. Send a BOQ/tender document (PDF or XLSX)\n" +
-      "2. BidSwift extracts every line item and cross-checks arithmetic, contract clauses, and pricing\n" +
-      "3. You get a risk score, a recommendation (Proceed / Proceed with Caution / Decline), and a short summary\n" +
-      "4. Tap *View Full Report* for the complete forensic PDF — every finding linked back to its source location\n\n" +
-      "This is decision support, not a decision-maker — every finding is meant to be checked, not blindly trusted. " +
-      "Pricing is benchmarked against a historical government rate schedule, not live market prices."
-    );
-    return res.status(200).json({ ok: true });
-  }
-
-  const doc = message.document;
-  if (!doc) {
-    await sendMessage(chatId, "Send a PDF or XLSX file to audit, or use /help to see how this works.");
-    return res.status(200).json({ ok: true });
-  }
-
-  // ── File received — run the audit with staged progress updates ─────
+// The actual audit + PDF work, run AFTER Telegram has already been acked.
+// Nothing in here blocks the webhook response.
+async function processAuditInBackground(chatId, userId, doc, host) {
   let progressMsg;
   try {
     progressMsg = await sendMessage(chatId, `Received *${doc.file_name}* — starting audit...`);
 
     const { buffer, fileName } = await getFileBuffer(doc.file_id);
-    const baseUrl = `https://${req.headers.host}`;
+    const baseUrl = `https://${host}`;
 
     const progressCb = async (text) => {
       if (progressMsg?.message_id) {
@@ -358,16 +277,38 @@ export default async function handler(req, res) {
 
     if (!result.ok) {
       await editMessageText(chatId, progressMsg.message_id, result.summary);
-      return res.status(200).json({ ok: true });
+      return;
     }
 
     const { extractData, analysisData } = result;
-    const shortMessage = buildShortMessage(fileName, extractData, analysisData);
 
-    // Cache the full analysis so the "View Full Report" button (a
-    // separate webhook request with no access to this closure's data)
-    // can look it back up. See migrations/004_telegram_audit_cache.sql.
-    const { data: cacheRow, error: cacheErr } = await supabaseAdmin
+    await editMessageText(
+      chatId,
+      progressMsg.message_id,
+      `${extractData.boqItems.length} item(s) analyzed. Generating full PDF report...`
+    );
+
+    // PDF is generated and sent outright — no button, no extra tap.
+    const pdfBuffer = await generateAuditPdf(analysisData, {
+      fileName,
+      generatedAt: new Date().toISOString().slice(0, 16).replace("T", " ") + " UTC",
+    });
+
+    const caption = buildResultCaption(fileName, extractData, analysisData);
+    const pdfName = `BidSwift-Audit-${(analysisData.project_name || fileName || "report").replace(/[^a-zA-Z0-9-_]/g, "_")}.pdf`;
+
+    await sendDocument(chatId, pdfBuffer, pdfName, caption);
+
+    // Delete the now-redundant progress message rather than leaving a
+    // stale "Generating..." line sitting above the real result.
+    await fetch(`${TELEGRAM_API}/deleteMessage`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ chat_id: chatId, message_id: progressMsg.message_id }),
+    }).catch(() => {});
+
+    // Best-effort audit trail. Not blocking the user-facing flow if it fails.
+    await supabaseAdmin
       .from("telegram_audit_cache")
       .insert({
         telegram_chat_id: String(chatId),
@@ -376,22 +317,9 @@ export default async function handler(req, res) {
         project_name: analysisData.project_name || fileName,
         analysis: analysisData,
       })
-      .select("id")
-      .single();
-
-    if (cacheErr || !cacheRow) {
-      console.error("[telegram-webhook] Failed to cache analysis for PDF button:", cacheErr?.message);
-      // Degrade gracefully — still deliver the short result, just without
-      // the PDF button, rather than losing the whole audit result.
-      await editMessageText(chatId, progressMsg.message_id, shortMessage);
-      return res.status(200).json({ ok: true });
-    }
-
-    await editMessageText(chatId, progressMsg.message_id, shortMessage, {
-      replyMarkup: {
-        inline_keyboard: [[{ text: "📄 View Full Report (PDF)", callback_data: `report:${cacheRow.id}` }]],
-      },
-    });
+      .then(({ error }) => {
+        if (error) console.error("[telegram-webhook] Audit log insert failed:", error.message);
+      });
   } catch (err) {
     console.error("[telegram-webhook] Audit failed:", err.message, err.stack);
     const failMsg = `Audit failed: ${err.message}\n\nPlease try again — if this keeps happening, the file may need a different format.`;
@@ -401,6 +329,83 @@ export default async function handler(req, res) {
       await sendMessage(chatId, failMsg);
     }
   }
+}
 
-  return res.status(200).json({ ok: true });
+// ─── Request handler ────────────────────────────────────────────────────
+
+export default async function handler(req, res) {
+  if (req.method !== "POST") {
+    res.status(200).json({ ok: true });
+    return;
+  }
+
+  const update = req.body;
+
+  if (update.update_id !== undefined) {
+    if (seenRecently(update.update_id)) {
+      console.warn(`[telegram-webhook] Ignored duplicate update_id ${update.update_id}`);
+      res.status(200).json({ ok: true });
+      return;
+    }
+  }
+
+  const message = update.message;
+  if (!message) {
+    res.status(200).json({ ok: true });
+    return;
+  }
+
+  const chatId = message.chat.id;
+  const userId = String(message.from?.id || "");
+
+  if (ALLOWED_TELEGRAM_USER_IDS.length > 0 && !ALLOWED_TELEGRAM_USER_IDS.includes(userId)) {
+    console.warn(`[telegram-webhook] Ignored message from non-allowlisted user ${userId}`);
+    res.status(200).json({ ok: true });
+    return;
+  }
+
+  // ── Ack Telegram FIRST, before any slow work ────────────────────────
+  res.status(200).json({ ok: true });
+
+  // Everything below runs after the response has been sent. Vercel keeps
+  // the function alive until this async work resolves.
+  await registerCommands();
+
+  if (message.text === "/start") {
+    await sendMessage(
+      chatId,
+      "*BidSwift AI* — pre-bid forensic audit for Ethiopian construction tenders.\n\n" +
+      "Send me a BOQ/tender document (PDF or XLSX) and I'll check it for arithmetic errors, " +
+      "contractual risk, scope gaps, and pricing deviation against the official government rate schedule. " +
+      "You'll get a full PDF report automatically.\n\n" +
+      "Use /audit to get started, or just send a file directly. Use /help for details on how the audit works."
+    );
+    return;
+  }
+
+  if (message.text === "/audit") {
+    await sendMessage(chatId, "Send the BOQ/tender file now — PDF or XLSX.");
+    return;
+  }
+
+  if (message.text === "/help") {
+    await sendMessage(
+      chatId,
+      "*How it works*\n\n" +
+      "1. Send a BOQ/tender document (PDF or XLSX)\n" +
+      "2. BidSwift extracts every line item and cross-checks arithmetic, contract clauses, and pricing\n" +
+      "3. You get a short summary and the complete forensic PDF automatically — every finding linked back to its source location\n\n" +
+      "This is decision support, not a decision-maker — every finding is meant to be checked, not blindly trusted. " +
+      "Pricing is benchmarked against a historical government rate schedule, not live market prices."
+    );
+    return;
+  }
+
+  const doc = message.document;
+  if (!doc) {
+    await sendMessage(chatId, "Send a PDF or XLSX file to audit, or use /help to see how this works.");
+    return;
+  }
+
+  await processAuditInBackground(chatId, userId, doc, req.headers.host);
 }
