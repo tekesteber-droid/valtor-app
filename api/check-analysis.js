@@ -282,11 +282,30 @@ export default async function handler(req, res) {
   }
 
   try {
-    const { systemPrompt, userPrompt, boqItems, documentText, clauses, contractValue } = req.body;
+    const { systemPrompt, userPrompt, boqItems: rawBoqItems, documentText, clauses, contractValue } = req.body;
 
     if (!systemPrompt || !userPrompt) {
       return res.status(400).json({ error: "Missing systemPrompt or userPrompt." });
     }
+
+    // ─── Normalize BOQ item field names ───────────────────────────────
+    // boqExtractor.js emits { itemNo, unitPrice, ... } (camelCase).
+    // pricingEvidence.js and validateArithmetic() below read
+    // { item_no, tender_price, ... } (snake_case). Without this
+    // normalization step, item.item_no and item.tender_price are
+    // undefined for every real extracted item — silently producing an
+    // empty Item # / Bid Rate / Variance column across the entire
+    // market_variance table, with no error anywhere in the pipeline
+    // (confirmed live: a real 115-item BOQ produced a fully-populated
+    // Benchmark Rate column but an entirely empty Bid Rate / Variance
+    // column in the generated report). Accepts either shape so this is
+    // safe regardless of which extractor path (LLM vs. deterministic
+    // regex fallback) produced the item.
+    const boqItems = (rawBoqItems || []).map((item) => ({
+      ...item,
+      item_no: item.item_no ?? item.itemNo ?? null,
+      tender_price: item.tender_price ?? item.unitPrice ?? item.unit_price ?? null,
+    }));
 
     // ─── Structured pricing lookup (deterministic, not LLM-generated) ────
     const engine = await getPricingEngine();
@@ -351,7 +370,15 @@ export default async function handler(req, res) {
       `document was available for clause/scope analysis, and limit findings to what the metadata and pricing/` +
       `arithmetic evidence actually support.\n` +
       `5. It is correct and expected to return an empty array for any finding category where the evidence does ` +
-      `not support a real finding. An empty array is not a failure — a fabricated finding is.`;
+      `not support a real finding. An empty array is not a failure — a fabricated finding is.\n` +
+      `6. OUTPUT FIELD ORDER — this matters and is not optional: place all structured/array fields ` +
+      `(contractual_traps, scope_gaps, key_risks, methodology_strengths, methodology_weaknesses) FIRST in the ` +
+      `JSON object, and place long-form prose fields (executive_summary, technical_critique, ` +
+      `financial_risk_summary) LAST. Do this because if the response is cut off by a token limit before ` +
+      `finishing, a truncated prose paragraph is recoverable, but an array that gets cut off after "contractual_` +
+      `traps": [ produces a bid audit with silently missing findings next to a summary that describes findings ` +
+      `the array doesn't contain — a genuine, previously-confirmed failure mode. Structured findings must never ` +
+      `be sacrificed to make room for narrative text.`;
 
     const groundedUserPrompt =
       `${userPrompt}\n\n` +
@@ -380,7 +407,19 @@ export default async function handler(req, res) {
       // "parsed" alone still produced the same empty-content 400 this
       // session). "hidden" + a larger max_tokens budget is the actual fix.
       reasoning_format: "hidden",
-      max_tokens: Number(process.env.AI_MAX_OUTPUT_TOKENS) || 6000,
+      // Raised from 6000 after a confirmed-live failure: a 115-item BOQ
+      // audit produced a rich, correct executive_summary and
+      // technical_critique (verbose prose fields) but completely empty
+      // contractual_traps and scope_gaps arrays — despite the executive
+      // summary explicitly describing findings that belonged in those
+      // arrays (missing defects liability/retention/LD clauses, absent
+      // electrical scope). Root cause: prose fields consumed the token
+      // budget before the model reached the structured arrays later in
+      // the JSON object. Combined with the field-ordering instruction
+      // above (structured fields first, prose last), this gives real
+      // headroom so a cutoff — if it still happens — truncates prose,
+      // not findings.
+      max_tokens: Number(process.env.AI_MAX_OUTPUT_TOKENS) || 8000,
       response_format: { type: "json_object" },
       messages: [
         { role: "system", content: groundedSystemPrompt },

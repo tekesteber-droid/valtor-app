@@ -98,29 +98,38 @@ function buildArithmeticTable(errors) {
 }
 
 function buildContractualTraps(traps) {
-  if (!traps || traps.length === 0) {
+  const validTraps = (traps || []).filter(t => t && (t.clause_type || t.description));
+  if (validTraps.length === 0) {
     return emptyState("No contractual risk clauses were identified from the supplied document text.");
   }
-  return traps.map(t => `
+  return validTraps.map(t => `
     <div class="finding-card" style="border-left-color:${(SEVERITY_COLORS[t.severity] || SEVERITY_COLORS.LOW).hex};">
       <div class="finding-header">
-        <span class="finding-title">${esc(t.clause_type)}</span>
+        <span class="finding-title">${esc(t.clause_type || "Contractual risk")}</span>
         ${severityBadge(t.severity)}
       </div>
       ${t.fidic_ref ? `<div class="finding-ref">FIDIC ref: ${esc(t.fidic_ref)}</div>` : ""}
-      <p class="finding-desc">${esc(t.description)}</p>
+      <p class="finding-desc">${esc(t.description || "No further detail provided.")}</p>
       ${t.recommendation ? `<p class="finding-rec"><strong>Recommended action:</strong> ${esc(t.recommendation)}</p>` : ""}
     </div>`).join("");
 }
 
 function buildScopeGaps(gaps) {
-  if (!gaps || gaps.length === 0) {
+  // Filter out malformed entries before checking emptiness — a
+  // token-truncated LLM response can produce a non-empty array of
+  // near-empty object shells (e.g. the JSON gets cut off mid-object),
+  // which would pass a bare `.length === 0` check and render as a table
+  // full of dashes instead of the honest "no gaps found" message.
+  // Confirmed live: this exact failure mode produced a scope-gaps table
+  // with a populated header row and every cell showing "—".
+  const validGaps = (gaps || []).filter(g => g && (g.missing_element || g.risk_impact));
+  if (validGaps.length === 0) {
     return emptyState("No scope gaps identified.");
   }
-  const rows = gaps.map(g => `
+  const rows = validGaps.map(g => `
     <tr>
-      <td>${esc(g.missing_element)}</td>
-      <td>${esc(g.risk_impact)}</td>
+      <td>${esc(g.missing_element || "Unspecified")}</td>
+      <td>${esc(g.risk_impact || "Not detailed")}</td>
       <td class="num">${fmtMoney(g.estimated_cost_etb)}</td>
     </tr>`).join("");
   return `
@@ -134,27 +143,50 @@ function buildMarketVariance(items, pricingRef) {
   if (!items || items.length === 0) {
     return emptyState("No BOQ line items were available for pricing comparison against the government benchmark.");
   }
-  const rows = items.slice(0, 40).map(m => `
-    <tr>
-      <td class="mono">${esc(m.item_no || "—")}</td>
-      <td>${esc(m.item)}</td>
-      <td class="num">${m.our_rate != null ? fmtMoney(m.our_rate) : "—"}</td>
-      <td class="num">${m.market_rate != null ? fmtMoney(m.market_rate) : "—"}</td>
-      <td class="num">${fmtPct(m.variance_pct)}</td>
-      <td>${esc(m.confidence || "Unknown")}</td>
-    </tr>`).join("");
-  const truncNote = items.length > 40
-    ? `<p class="table-note">Showing 40 of ${items.length} matched line items.</p>` : "";
+
+  // Split into matched (a real benchmark comparison exists) vs. unmatched
+  // (no reference item found — confidence "Unknown", nothing to compare).
+  // A single table dominated by "Unknown" rows buries the handful of
+  // rows that actually carry a finding. Confirmed live: a 40-row table
+  // where the large majority were "Unknown" with every numeric column
+  // showing "—" read as broken rather than as an honest "couldn't match
+  // most of these line items to the benchmark" result.
+  const matched = items.filter(m => m.confidence && m.confidence !== "Unknown" && (m.our_rate != null || m.market_rate != null));
+  const unmatched = items.filter(m => !matched.includes(m));
+
   const refNote = pricingRef
     ? `<p class="table-note">Benchmarked against: ${esc(pricingRef.source_document || "")} (${esc(pricingRef.publication_period || "")}). ${esc(pricingRef.disclaimer || "")}</p>`
     : "";
-  return `
-    ${refNote}
+
+  const matchedSection = matched.length > 0 ? `
+    <div class="subhead">Matched Against Benchmark (${matched.length} item${matched.length === 1 ? "" : "s"})</div>
     <table class="data-table">
       <thead><tr><th>Item #</th><th>Description</th><th class="num">Bid Rate</th><th class="num">Benchmark Rate</th><th class="num">Variance</th><th>Confidence</th></tr></thead>
-      <tbody>${rows}</tbody>
+      <tbody>${matched.slice(0, 40).map(m => `
+        <tr>
+          <td class="mono">${esc(m.item_no || "—")}</td>
+          <td>${esc(m.item)}</td>
+          <td class="num">${m.our_rate != null ? fmtMoney(m.our_rate) : "—"}</td>
+          <td class="num">${m.market_rate != null ? fmtMoney(m.market_rate) : "—"}</td>
+          <td class="num">${fmtPct(m.variance_pct)}</td>
+          <td>${esc(m.confidence)}</td>
+        </tr>`).join("")}</tbody>
     </table>
-    ${truncNote}`;
+    ${matched.length > 40 ? `<p class="table-note">Showing 40 of ${matched.length} matched line items.</p>` : ""}
+  ` : emptyState("No BOQ line items could be matched to a benchmark reference item.");
+
+  const unmatchedSection = unmatched.length > 0 ? `
+    <div class="subhead" style="margin-top:20px;">Not Matched to Benchmark (${unmatched.length} item${unmatched.length === 1 ? "" : "s"})</div>
+    <p class="table-note" style="margin-bottom:8px;">These line items had no corresponding entry in the government rate schedule — not a finding, just outside the benchmark's coverage. Listed for completeness.</p>
+    <table class="data-table compact">
+      <thead><tr><th>Description</th><th class="num">Bid Rate</th></tr></thead>
+      <tbody>${unmatched.slice(0, 25).map(m => `
+        <tr><td>${esc(m.item)}</td><td class="num">${m.our_rate != null ? fmtMoney(m.our_rate) : "—"}</td></tr>`).join("")}</tbody>
+    </table>
+    ${unmatched.length > 25 ? `<p class="table-note">Showing 25 of ${unmatched.length} unmatched line items.</p>` : ""}
+  ` : "";
+
+  return `${refNote}${matchedSection}${unmatchedSection}`;
 }
 
 function buildList(items) {
@@ -169,22 +201,47 @@ function buildCoverPage(analysis, meta) {
   const scoreDisplay = analysis.risk_score === null || analysis.risk_score === undefined
     ? "—" : Math.round(analysis.risk_score);
 
+  const arithCount = (analysis.arithmetic_errors || []).length;
+  const trapCount = (analysis.contractual_traps || []).filter(t => t && (t.clause_type || t.description)).length;
+  const gapCount = (analysis.scope_gaps || []).filter(g => g && (g.missing_element || g.risk_impact)).length;
+  const itemCount = (analysis.market_variance || []).length;
+
+  const statBlock = (n, label) => `
+    <div class="stat-cell">
+      <div class="stat-num">${n}</div>
+      <div class="stat-label">${esc(label)}</div>
+    </div>`;
+
   return `
     <div class="cover-page">
       <div class="cover-brand">BidSwift AI</div>
       <div class="cover-subtitle">Pre-Bid Forensic Audit Report</div>
       <div class="cover-project">${esc(analysis.project_name || meta.fileName || "Untitled Project")}</div>
 
-      <div class="cover-score-block">
-        <div class="score-ring" style="border-color:${risk.hex};">
-          <div class="score-number" style="color:${risk.hex};">${scoreDisplay}</div>
-          <div class="score-of100">/ 100</div>
+      <div class="cover-top-row">
+        <div class="cover-score-block">
+          <div class="score-ring" style="border-color:${risk.hex};">
+            <div class="score-number" style="color:${risk.hex};">${scoreDisplay}</div>
+            <div class="score-of100">/ 100</div>
+          </div>
+          <div class="score-label" style="color:${risk.hex};">${risk.label}</div>
         </div>
-        <div class="score-label" style="color:${risk.hex};">${risk.label}</div>
+
+        <div class="cover-rec-block">
+          <div class="cover-rec" style="background:${recColor.bg};border:1px solid ${recColor.hex}55;">
+            <span style="color:${recColor.hex};font-weight:700;">${esc((rec || "").replace(/_/g, " "))}</span>
+          </div>
+          ${analysis._recommendation_inferred
+            ? `<div class="rec-note">Derived from risk score — model did not return an explicit recommendation.</div>`
+            : ""}
+        </div>
       </div>
 
-      <div class="cover-rec" style="background:${recColor.bg};border:1px solid ${recColor.hex}55;">
-        <span style="color:${recColor.hex};font-weight:700;">${esc((rec || "").replace(/_/g, " "))}</span>
+      <div class="stat-strip">
+        ${statBlock(itemCount, "BOQ Items Analyzed")}
+        ${statBlock(arithCount, "Arithmetic Findings")}
+        ${statBlock(trapCount, "Contractual Risks")}
+        ${statBlock(gapCount, "Scope Gaps")}
       </div>
 
       <table class="cover-meta">
@@ -222,9 +279,11 @@ function buildStyles() {
         background: linear-gradient(180deg, #F8FAFC 0%, #FFFFFF 40%);
       }
       .cover-brand { font-size: 15px; font-weight: 700; letter-spacing: 0.08em; color: #0F172A; text-transform: uppercase; }
-      .cover-subtitle { font-size: 12px; color: #64748B; margin-top: 4px; margin-bottom: 48px; }
-      .cover-project { font-size: 26px; font-weight: 700; color: #0F172A; margin-bottom: 40px; max-width: 480px; }
-      .cover-score-block { display: flex; flex-direction: column; align-items: flex-start; margin-bottom: 24px; }
+      .cover-subtitle { font-size: 12px; color: #64748B; margin-top: 4px; margin-bottom: 36px; }
+      .cover-project { font-size: 26px; font-weight: 700; color: #0F172A; margin-bottom: 32px; max-width: 480px; }
+
+      .cover-top-row { display: flex; align-items: flex-start; gap: 48px; margin-bottom: 36px; }
+      .cover-score-block { display: flex; flex-direction: column; align-items: flex-start; }
       .score-ring {
         width: 140px; height: 140px; border-radius: 50%; border: 6px solid;
         display: flex; flex-direction: column; align-items: center; justify-content: center;
@@ -233,12 +292,21 @@ function buildStyles() {
       .score-number { font-size: 44px; font-weight: 800; line-height: 1; }
       .score-of100 { font-size: 11px; color: #94A3B8; margin-top: 2px; }
       .score-label { font-size: 13px; font-weight: 700; letter-spacing: 0.06em; margin-top: 14px; }
-      .cover-rec { display: inline-block; padding: 10px 20px; border-radius: 6px; font-size: 14px; margin-bottom: 40px; width: fit-content; }
-      .cover-meta { border-collapse: collapse; margin-top: auto; font-size: 11px; }
+
+      .cover-rec-block { display: flex; flex-direction: column; justify-content: center; height: 140px; }
+      .cover-rec { display: inline-block; padding: 12px 22px; border-radius: 6px; font-size: 16px; width: fit-content; }
+      .rec-note { font-size: 8.5px; color: #94A3B8; margin-top: 8px; max-width: 220px; line-height: 1.5; font-style: italic; }
+
+      .stat-strip { display: flex; gap: 0; margin-bottom: 36px; border-top: 1px solid #E2E8F0; border-bottom: 1px solid #E2E8F0; padding: 20px 0; }
+      .stat-cell { flex: 1; text-align: left; padding-right: 20px; }
+      .stat-num { font-size: 28px; font-weight: 800; color: #0F172A; line-height: 1; }
+      .stat-label { font-size: 8.5px; color: #64748B; margin-top: 6px; text-transform: uppercase; letter-spacing: 0.04em; font-weight: 600; }
+
+      .cover-meta { border-collapse: collapse; font-size: 11px; margin-top: auto; }
       .cover-meta td { padding: 6px 0; border-top: 1px solid #E2E8F0; }
       .cover-meta td:first-child { color: #64748B; padding-right: 32px; }
       .cover-meta td:last-child { font-weight: 600; color: #0F172A; }
-      .cover-footer { font-size: 9px; color: #94A3B8; margin-top: 40px; max-width: 420px; line-height: 1.6; }
+      .cover-footer { font-size: 9px; color: #94A3B8; margin-top: 24px; max-width: 420px; line-height: 1.6; }
 
       .report-body { padding: 40px 48px; }
       .report-section { margin-bottom: 32px; }
@@ -249,6 +317,8 @@ function buildStyles() {
       }
       .report-section p { margin: 0 0 10px 0; color: #334155; }
       .empty-state { color: #94A3B8; font-style: italic; font-size: 10px; }
+
+      .data-table.compact td, .data-table.compact th { padding: 5px 10px; font-size: 9px; }
 
       .badge, .sev-badge {
         display: inline-block; padding: 2px 9px; border-radius: 4px;
