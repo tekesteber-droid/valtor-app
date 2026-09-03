@@ -13,7 +13,8 @@
       "memory": 1536
     },
     "api/generate-pdf-report.js": {
-      "memory": 1536
+      "memory": 1536,
+      "maxDuration": 60
     }
   }
 }
