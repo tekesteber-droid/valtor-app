@@ -5,14 +5,21 @@
 //
 // This file does no extraction or analysis of its own — all real logic
 // stays in /api/extract-boq and /api/check-analysis, the same endpoints
-// the web UI calls. This file's only jobs are: (1) drive a good Telegram
-// conversation flow around those endpoints, and (2) generate/deliver the
-// PDF report via reportGenerator.js.
+// the web UI calls. This file's job is to drive the Telegram conversation
+// flow and produce the short result. PDF generation happens in a SEPARATE
+// function (api/generate-pdf-report.js) — see that file's header comment
+// for why: Vercel's Hobby plan hard-caps function execution at 60s, and
+// the full extract+analyze+PDF chain confirmed-live exceeds that as one
+// request. This file triggers the PDF endpoint via a fire-and-forget
+// fetch call once its own (already tight) work is done, rather than
+// generating the PDF inline.
 //
 // ── On the retry-loop bug and how it's actually handled ────────────────
 // Telegram redelivers a webhook update if it doesn't get a 200 response
-// back within its own timeout. A full audit run (extract + LLM analysis
-// + PDF render) can take 30-90+ seconds, comfortably longer than that.
+// back within its own timeout. The extract+analyze portion alone can
+// take 50s+ on a large BOQ (confirmed live: ~55s on a 115-item file) —
+// close enough to Telegram's own delivery timeout that a retry is a real
+// possibility even without the PDF step in the mix.
 //
 // A first attempt at fixing this tried to send res.status(200) BEFORE
 // running the audit, then keep executing afterward — on the assumption
@@ -23,14 +30,10 @@
 // /start acked cleanly in the logs, but the bot never replied).
 //
 // The actual fix here is simpler: run the full flow to completion before
-// responding (same as the very first version of this file), and rely on
-// update_id deduplication (below) to absorb Telegram's retries as safe
-// no-ops instead of re-running the audit. maxDuration is set to 60s in
-// vercel.json to give the full flow real headroom before Vercel itself
-// would time the function out.
+// responding, and rely on update_id deduplication (below) to absorb
+// Telegram's retries as safe no-ops instead of re-running the audit.
 
 import { createClient } from "@supabase/supabase-js";
-import { generateAuditPdf } from "./_lib/reportGenerator.js";
 
 const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
 const TELEGRAM_API = `https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}`;
@@ -83,21 +86,6 @@ async function editMessageText(chatId, messageId, text, opts = {}) {
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
   });
-}
-
-async function sendDocument(chatId, buffer, fileName, caption) {
-  const form = new FormData();
-  form.append("chat_id", String(chatId));
-  form.append("document", new Blob([buffer], { type: "application/pdf" }), fileName);
-  if (caption) {
-    form.append("caption", caption);
-    form.append("parse_mode", "Markdown");
-  }
-  const res = await fetch(`${TELEGRAM_API}/sendDocument`, { method: "POST", body: form });
-  if (!res.ok) {
-    const txt = await res.text();
-    throw new Error(`sendDocument failed (${res.status}): ${txt.slice(0, 200)}`);
-  }
 }
 
 async function getFileBuffer(fileId) {
@@ -252,12 +240,14 @@ function buildResultCaption(fileName, extractData, analysisData) {
     `${riskLine}\n` +
     `Recommendation: *${rec}*\n\n` +
     (oneLiner ? `${oneLiner}\n\n` : "") +
-    `📄 Full forensic report attached below — every finding evidence-linked to source.`
+    `Full forensic report follows shortly — every finding evidence-linked to source.`
   );
 }
 
-// The actual audit + PDF work, run AFTER Telegram has already been acked.
-// Nothing in here blocks the webhook response.
+// The extract + analyze work, run to completion within THIS function's
+// budget. PDF generation is deliberately NOT done here — see the
+// trigger call at the end of this function and the header comment in
+// generate-pdf-report.js for why.
 async function processAuditInBackground(chatId, userId, doc, host) {
   let progressMsg;
   try {
@@ -280,34 +270,14 @@ async function processAuditInBackground(chatId, userId, doc, host) {
     }
 
     const { extractData, analysisData } = result;
-
-    await editMessageText(
-      chatId,
-      progressMsg.message_id,
-      `${extractData.boqItems.length} item(s) analyzed. Generating full PDF report...`
-    );
-
-    // PDF is generated and sent outright — no button, no extra tap.
-    const pdfBuffer = await generateAuditPdf(analysisData, {
-      fileName,
-      generatedAt: new Date().toISOString().slice(0, 16).replace("T", " ") + " UTC",
-    });
-
     const caption = buildResultCaption(fileName, extractData, analysisData);
-    const pdfName = `BidSwift-Audit-${(analysisData.project_name || fileName || "report").replace(/[^a-zA-Z0-9-_]/g, "_")}.pdf`;
 
-    await sendDocument(chatId, pdfBuffer, pdfName, caption);
+    await editMessageText(chatId, progressMsg.message_id, caption);
 
-    // Delete the now-redundant progress message rather than leaving a
-    // stale "Generating..." line sitting above the real result.
-    await fetch(`${TELEGRAM_API}/deleteMessage`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ chat_id: chatId, message_id: progressMsg.message_id }),
-    }).catch(() => {});
-
-    // Best-effort audit trail. Not blocking the user-facing flow if it fails.
-    await supabaseAdmin
+    // Cache the analysis so the PDF-generation endpoint (a separate
+    // function invocation, with its own fresh execution budget) can look
+    // it up. See migrations/004_telegram_audit_cache.sql.
+    const { data: cacheRow, error: cacheErr } = await supabaseAdmin
       .from("telegram_audit_cache")
       .insert({
         telegram_chat_id: String(chatId),
@@ -316,9 +286,35 @@ async function processAuditInBackground(chatId, userId, doc, host) {
         project_name: analysisData.project_name || fileName,
         analysis: analysisData,
       })
-      .then(({ error }) => {
-        if (error) console.error("[telegram-webhook] Audit log insert failed:", error.message);
-      });
+      .select("id")
+      .single();
+
+    if (cacheErr || !cacheRow) {
+      console.error("[telegram-webhook] Failed to cache analysis for PDF generation:", cacheErr?.message);
+      await sendMessage(chatId, "Couldn't queue the full PDF report — the short summary above is still valid.");
+      return;
+    }
+
+    await sendMessage(chatId, "📄 Generating the full forensic report — arriving in a moment...");
+
+    // Fire-and-forget trigger to the standalone PDF-generation endpoint.
+    // Deliberately NOT awaited: this function's own execution budget is
+    // already mostly spent on extract+analyze (confirmed live: ~55s just
+    // for that portion on a 115-item BOQ), and PDF generation via
+    // Puppeteer/Chromium needs its own fresh 60s window, not whatever's
+    // left of this one. If this fetch call itself fails to even fire
+    // (network blip), the user still has their short result — the PDF is
+    // additive, not the only output.
+    fetch(`https://${host}/api/generate-pdf-report`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "x-internal-secret": process.env.INTERNAL_TRIGGER_SECRET,
+      },
+      body: JSON.stringify({ cacheId: cacheRow.id }),
+    }).catch((err) => {
+      console.error("[telegram-webhook] Failed to trigger PDF generation:", err.message);
+    });
   } catch (err) {
     console.error("[telegram-webhook] Audit failed:", err.message, err.stack);
     const failMsg = `Audit failed: ${err.message}\n\nPlease try again — if this keeps happening, the file may need a different format.`;
@@ -329,6 +325,7 @@ async function processAuditInBackground(chatId, userId, doc, host) {
     }
   }
 }
+
 
 // ─── Request handler ────────────────────────────────────────────────────
 //

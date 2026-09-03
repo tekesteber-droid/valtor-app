@@ -10,8 +10,10 @@
       "includeFiles": "node_modules/{pdfjs-dist,pdf-parse}/**"
     },
     "api/telegram-webhook.js": {
-      "memory": 1536,
-      "maxDuration": 60
+      "memory": 1536
+    },
+    "api/generate-pdf-report.js": {
+      "memory": 1536
     }
   }
 }
