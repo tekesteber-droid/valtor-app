@@ -290,7 +290,18 @@ async function processAuditInBackground(chatId, userId, doc, host) {
       .single();
 
     if (cacheErr || !cacheRow) {
-      console.error("[telegram-webhook] Failed to cache analysis for PDF generation:", cacheErr?.message);
+      // Log the FULL error object, not just .message — Supabase errors
+      // carry .code, .details, .hint which are essential for telling a
+      // genuine PostgREST schema-cache miss (code PGRST205) apart from a
+      // connection failure, wrong project, or something else entirely.
+      // Logging only .message was masking this during earlier debugging.
+      console.error("[telegram-webhook] Failed to cache analysis for PDF generation:", JSON.stringify(cacheErr, null, 2));
+      console.error("[telegram-webhook] Supabase client config check:", {
+        urlSet: Boolean(process.env.VITE_SUPABASE_URL),
+        urlPrefix: process.env.VITE_SUPABASE_URL?.slice(0, 30),
+        keySet: Boolean(process.env.SUPABASE_SERVICE_ROLE_KEY),
+        keyLength: process.env.SUPABASE_SERVICE_ROLE_KEY?.length,
+      });
       await sendMessage(chatId, "Couldn't queue the full PDF report — the short summary above is still valid.");
       return;
     }
