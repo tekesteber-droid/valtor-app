@@ -430,8 +430,29 @@ export default async function handler(req, res) {
     const data = await response.json();
 
     // Extract the LLM's JSON from the response
-    let raw = data.choices?.[0]?.message?.content || "{}";
+    let raw = data.choices?.[0]?.message?.content || "";
     raw = raw.replace(/```json/g, "").replace(/```/g, "").trim();
+
+    // Log what actually came back BEFORE parsing — confirmed live that a
+    // provider can return a response that is technically 200 OK, has no
+    // parse error, and still produces a completely empty audit (no
+    // executive_summary, no findings, everything blank). The earlier
+    // version of this code defaulted an empty/missing content field to
+    // the literal string "{}" and parsed it with zero warning — a
+    // trivially valid empty object sailed through as if it were a real
+    // success. That is a worse failure mode than an honest crash, because
+    // it produces a PDF that LOOKS like a completed audit but contains
+    // nothing, with no signal anywhere in the logs that anything went
+    // wrong. This is now treated as a real, loud failure instead.
+    console.log(`[check-analysis] Provider ${provider.name}/${provider.model} returned ${raw.length} chars. Preview: "${raw.slice(0, 150)}"`);
+
+    if (raw.length < 50) {
+      console.error(`[check-analysis] Provider ${provider.name}/${provider.model} returned an empty or near-empty response (${raw.length} chars) — refusing to treat this as a valid audit.`);
+      return res.status(502).json({
+        error: "AI provider returned an empty response. Please retry the audit.",
+        detail: `Provider ${provider.name} returned ${raw.length} characters of content.`,
+      });
+    }
 
     // Defensive parse — some free-tier/routed models (confirmed live on
     // openrouter/free) ignore response_format:{type:"json_object"} and
@@ -470,6 +491,46 @@ export default async function handler(req, res) {
     // Ensure arrays exist
     analysis.contractual_traps = Array.isArray(analysis.contractual_traps) ? analysis.contractual_traps : [];
     analysis.scope_gaps = Array.isArray(analysis.scope_gaps) ? analysis.scope_gaps : [];
+
+    // Real visibility into what the model actually returned. Previously
+    // a "successful" JSON.parse with genuinely empty/near-empty content
+    // (empty executive_summary, empty technical_critique, empty arrays)
+    // produced ZERO log output — no error, no warning — because it never
+    // hit the parse-failure or salvage branches above. Confirmed live:
+    // a full audit run produced a completely blank Executive Summary and
+    // Technical Critique with no findings in either register, and
+    // nothing in the logs indicated anything had gone wrong. This log
+    // line exists so that failure mode is now visible.
+    const summaryLen = (analysis.executive_summary || "").length;
+    const critiqueLen = (analysis.technical_critique || "").length;
+    console.log(
+      `[check-analysis] Response content check: executive_summary=${summaryLen} chars, ` +
+      `technical_critique=${critiqueLen} chars, contractual_traps=${analysis.contractual_traps.length}, ` +
+      `scope_gaps=${analysis.scope_gaps.length}, recommendation=${analysis.recommendation || "MISSING"}`
+    );
+    if (summaryLen < 20 && critiqueLen < 20 && analysis.contractual_traps.length === 0 && analysis.scope_gaps.length === 0) {
+      // This was previously a warn-only log — the response still shipped
+      // through as a "successful" audit despite being functionally empty.
+      // Confirmed live: this exact condition produced a real PDF sent to
+      // a real user with a blank Executive Summary, blank Technical
+      // Critique, and "none found" in every findings section — which
+      // reads as a broken product, not a clean bill of health. A
+      // response this thin is far more likely to be a low-effort/refused
+      // completion from the free-tier provider than a genuine "nothing
+      // to report" result on a 115-item real-world tender document.
+      // Blocking here and returning 502 lets the caller (web UI, bot)
+      // retry — usually against a different routed model — rather than
+      // silently deliver an empty deliverable that looks complete.
+      console.error(
+        `[check-analysis] BLOCKED: parsed successfully but nearly all content fields are empty — ` +
+        `refusing to treat this as a valid audit. Provider: ${provider.name}/${provider.model}. ` +
+        `Raw response (first 300 chars): "${raw.slice(0, 300)}"`
+      );
+      return res.status(502).json({
+        error: "AI provider returned an unusually thin response for this document. Please retry the audit.",
+        detail: `Provider ${provider.name} returned a parseable but near-empty analysis (summary=${summaryLen} chars, critique=${critiqueLen} chars, 0 contractual traps, 0 scope gaps).`,
+      });
+    }
 
     // Market pricing and arithmetic errors are NEVER taken from the LLM —
     // always the deterministic evidence computed above, regardless of what
