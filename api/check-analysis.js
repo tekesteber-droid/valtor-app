@@ -378,7 +378,45 @@ export default async function handler(req, res) {
       `finishing, a truncated prose paragraph is recoverable, but an array that gets cut off after "contractual_` +
       `traps": [ produces a bid audit with silently missing findings next to a summary that describes findings ` +
       `the array doesn't contain — a genuine, previously-confirmed failure mode. Structured findings must never ` +
-      `be sacrificed to make room for narrative text.`;
+      `be sacrificed to make room for narrative text.\n\n` +
+      // Explicit schema — this block is defined HERE, in check-analysis.js
+      // itself, rather than left to whatever loose field-name list a
+      // given caller's systemPrompt happens to mention. Confirmed live:
+      // without an explicit per-field shape, the model has produced (a)
+      // a completely empty technical_critique with no error or warning,
+      // and (b) every contractual_traps[].clause_type set to the same
+      // generic literal string "Contractual risk" instead of a real,
+      // distinct title per finding — both are schema-ambiguity failures,
+      // not extraction failures, and both are fixed by specifying the
+      // shape precisely instead of relying on the model to infer it.
+      `REQUIRED JSON SCHEMA — every field below is required unless noted. Do not omit technical_critique ` +
+      `even if brief; a short but real critique is required, an empty string is not acceptable:\n` +
+      `{\n` +
+      `  "recommendation": "PROCEED" | "PROCEED_WITH_CAUTION" | "DECLINE",\n` +
+      `  "contractual_traps": [\n` +
+      `    {\n` +
+      `      "clause_type": "A short, SPECIFIC title naming what this finding is about — e.g. ` +
+      `'Missing Liquidated Damages Clause' or 'Understated Foundation Pricing'. NEVER use the generic ` +
+      `literal string \\"Contractual risk\\" as this value — that is a placeholder, not a title.",\n` +
+      `      "severity": "CRITICAL" | "HIGH" | "MEDIUM" | "LOW",\n` +
+      `      "fidic_ref": "FIDIC sub-clause number if one is genuinely referenced in the document text, else omit this field entirely",\n` +
+      `      "description": "1-3 sentences explaining the specific finding, citing concrete figures/clauses from the evidence provided",\n` +
+      `      "recommendation": "1 sentence: the concrete action this finding calls for"\n` +
+      `    }\n` +
+      `  ],\n` +
+      `  "scope_gaps": [\n` +
+      `    { "missing_element": "what's missing", "risk_impact": "why it matters", "estimated_cost_etb": number or null }\n` +
+      `  ],\n` +
+      `  "key_risks": ["short bullet-point risk statements, distinct from contractual_traps — high-level, not per-clause"],\n` +
+      `  "methodology_strengths": ["short bullet points on what the bid does well"],\n` +
+      `  "methodology_weaknesses": ["short bullet points on where the bid's methodology falls short"],\n` +
+      `  "executive_summary": "3-5 sentence overview a decision-maker reads first — the verdict and why",\n` +
+      `  "technical_critique": "REQUIRED, 2-4 sentences. Evaluate the bid's technical/methodological approach specifically — ` +
+      `not a repeat of executive_summary. If there is genuinely nothing technical to critique beyond what's already ` +
+      `covered, say so explicitly (e.g. 'No technical methodology beyond standard BOQ pricing was submitted for review') ` +
+      `rather than leaving this field empty.",\n` +
+      `  "financial_risk_summary": "2-3 sentences on financial exposure specifically, distinct from contractual/technical findings"\n` +
+      `}`;
 
     const groundedUserPrompt =
       `${userPrompt}\n\n` +
@@ -491,6 +529,21 @@ export default async function handler(req, res) {
     // Ensure arrays exist
     analysis.contractual_traps = Array.isArray(analysis.contractual_traps) ? analysis.contractual_traps : [];
     analysis.scope_gaps = Array.isArray(analysis.scope_gaps) ? analysis.scope_gaps : [];
+
+    // technical_critique is now explicitly required by the schema above,
+    // but a model can still omit it even when the rest of the audit is
+    // solid (confirmed live: a run with a real executive_summary and 4
+    // real contractual_traps still had a blank technical_critique — not
+    // severe enough to trigger the whole-response empty-content block
+    // below, but severe enough to render as a broken-looking blank
+    // section header in the PDF with nothing under it). An honest
+    // placeholder is better than silent blankness here.
+    if (!analysis.technical_critique || analysis.technical_critique.trim().length < 10) {
+      analysis.technical_critique =
+        "No distinct technical critique was returned for this submission beyond what is covered in the " +
+        "executive summary and contractual risk register above.";
+      analysis._technical_critique_inferred = true;
+    }
 
     // Real visibility into what the model actually returned. Previously
     // a "successful" JSON.parse with genuinely empty/near-empty content

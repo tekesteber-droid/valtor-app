@@ -102,16 +102,26 @@ function buildContractualTraps(traps) {
   if (validTraps.length === 0) {
     return emptyState("No contractual risk clauses were identified from the supplied document text.");
   }
-  return validTraps.map(t => `
+  return validTraps.map((t, idx) => {
+    // Fallback when clause_type is missing — previously fell back to the
+    // identical literal string "Contractual risk" for every trap missing
+    // a title, which is exactly what rendered four times in a real PDF
+    // (the model omitted clause_type on all four, so the template's own
+    // fallback became the visible bug). A numbered, slightly-derived
+    // fallback is honest about being a fallback while still being
+    // distinguishable finding-to-finding.
+    const title = t.clause_type || `Contractual Risk Finding ${idx + 1}`;
+    return `
     <div class="finding-card" style="border-left-color:${(SEVERITY_COLORS[t.severity] || SEVERITY_COLORS.LOW).hex};">
       <div class="finding-header">
-        <span class="finding-title">${esc(t.clause_type || "Contractual risk")}</span>
+        <span class="finding-title">${esc(title)}</span>
         ${severityBadge(t.severity)}
       </div>
       ${t.fidic_ref ? `<div class="finding-ref">FIDIC ref: ${esc(t.fidic_ref)}</div>` : ""}
       <p class="finding-desc">${esc(t.description || "No further detail provided.")}</p>
       ${t.recommendation ? `<p class="finding-rec"><strong>Recommended action:</strong> ${esc(t.recommendation)}</p>` : ""}
-    </div>`).join("");
+    </div>`;
+  }).join("");
 }
 
 function buildScopeGaps(gaps) {
@@ -175,9 +185,21 @@ function buildMarketVariance(items, pricingRef) {
     ${matched.length > 40 ? `<p class="table-note">Showing 40 of ${matched.length} matched line items.</p>` : ""}
   ` : emptyState("No BOQ line items could be matched to a benchmark reference item.");
 
+  const totalItems = matched.length + unmatched.length;
+  const unmatchedPct = totalItems > 0 ? (unmatched.length / totalItems) * 100 : 0;
+  // A flat "listed for completeness" note reads the same whether 5% or
+  // 79% of items are unmatched — those are very different situations for
+  // a reader to understand. Confirmed live: a 115-item real bid had 91
+  // unmatched items (79%) with no signal that this coverage level was
+  // unusual, which under-communicates a real limitation of the benchmark
+  // comparison for that specific document.
+  const unmatchedNote = unmatchedPct >= 50
+    ? `<strong>${unmatchedPct.toFixed(0)}% of line items had no match</strong> in the government rate schedule — this benchmark covers a minority of this bid's scope. This is common for specialized or non-standard items not present in a general government schedule, and is not itself a finding, but it does mean the market variance analysis above should be read as partial coverage, not a full pricing audit.`
+    : `These line items had no corresponding entry in the government rate schedule — not a finding, just outside the benchmark's coverage. Listed for completeness.`;
+
   const unmatchedSection = unmatched.length > 0 ? `
     <div class="subhead" style="margin-top:20px;">Not Matched to Benchmark (${unmatched.length} item${unmatched.length === 1 ? "" : "s"})</div>
-    <p class="table-note" style="margin-bottom:8px;">These line items had no corresponding entry in the government rate schedule — not a finding, just outside the benchmark's coverage. Listed for completeness.</p>
+    <p class="table-note" style="margin-bottom:8px;">${unmatchedNote}</p>
     <table class="data-table compact">
       <thead><tr><th>Description</th><th class="num">Bid Rate</th></tr></thead>
       <tbody>${unmatched.slice(0, 25).map(m => `
