@@ -3,6 +3,7 @@ import { createClient } from "@supabase/supabase-js";
 import { getPricingEngine } from "./_lib/pricingEngine.js";
 import { buildPricingEvidence, buildPricingReference } from "./_lib/pricingEvidence.js";
 import { validateArithmetic } from "./_lib/arithmeticValidator.js";
+import { computeComplianceRisk, computePricingRisk } from "./_lib/riskScoring.js";
 
 const supabaseAdmin = createClient(
   process.env.VITE_SUPABASE_URL,
@@ -98,38 +99,40 @@ function resolveProvider(estimatedInputChars) {
   };
 }
 
-// ─── Deterministic risk score calculator ──────────────────────────────
-// Returns null — not a fabricated midpoint — when there isn't enough
-// grounded evidence to score responsibly. "Enough evidence" here means:
-// real document text was supplied, AND at least some pricing or arithmetic
-// evidence was computed from it.
-function calculateRiskScore(analysis, { hasDocumentText, evidenceCount }) {
+// ─── Deterministic risk scores (Option C: Compliance Risk + Pricing Risk) ──
+// Replaces the old single additive calculateRiskScore(), which: (a) gave
+// scope_gaps a flat +5 with zero severity weighting, (b) used
+// Math.abs(variance_percent) > 20, conflating underbidding and overbidding
+// into one signal, and (c) could overshoot 100 before clamping (confirmed
+// live: a real bid scored 194 raw), destroying discriminating power between
+// "messy but fine" and "actually high risk." See api/_lib/riskScoring.js
+// for the noisy-OR combination logic and full rationale.
+//
+// Preserves the same null-when-no-evidence contract as the old function:
+// returns null — not a fabricated midpoint — when there isn't enough
+// grounded evidence to score responsibly.
+function computeRiskScores(analysis, { hasDocumentText, evidenceCount, totalBidPrice }) {
   if (!hasDocumentText && evidenceCount === 0) {
-    return null;
+    return { compliance_risk_score: null, pricing_risk_score: null, risk_score: null };
   }
 
-  let score = 50; // baseline
+  const compliance = computeComplianceRisk(analysis, { totalBidPrice });
+  const pricing = computePricingRisk(analysis, totalBidPrice);
 
-  (analysis.contractual_traps || []).forEach((trap) => {
-    if (trap.severity === "CRITICAL") score += 10;
-    else if (trap.severity === "HIGH") score += 5;
-  });
-
-  (analysis.arithmetic_errors || []).forEach((err) => {
-    if (err.severity === "HIGH") score += 8;
-    else if (err.severity === "MEDIUM") score += 4;
-  });
-
-  (analysis.market_variance || []).forEach((m) => {
-    if (m.variance_percent != null && Math.abs(m.variance_percent) > 20) score += 3;
-  });
-
-  (analysis.scope_gaps || []).forEach(() => score += 5);
-
-  if (analysis.recommendation === "DECLINE") score += 15;
-  else if (analysis.recommendation === "PROCEED") score -= 10;
-
-  return Math.max(0, Math.min(100, Math.round(score)));
+  return {
+    compliance_risk_score: compliance,
+    pricing_risk_score: pricing,
+    // TEMPORARY bridge for existing consumers (PDF template, Telegram
+    // message, frontend) that still expect a single risk_score number.
+    // This is deliberately max(), not an average — one severely risky
+    // dimension should not be diluted by the other being clean, and
+    // averaging would silently reintroduce the exact blended-score problem
+    // this redesign exists to remove. DELETE this field once the PDF
+    // template and Telegram message are updated to show both scores
+    // explicitly — that update is separate, out-of-scope work, tracked
+    // independently, not done as part of this change.
+    risk_score: Math.max(compliance.score, pricing.score),
+  };
 }
 
 // Renders the deterministic pricing evidence into a compact block the LLM
@@ -159,7 +162,7 @@ function formatPricingEvidenceForPrompt(evidence) {
       return `${i + 1}. "${e.item}" — Reference unavailable (no reliable match in the official price book). Do not estimate a price for this item.`;
     }
     return (
-      `${i + 1}. "${e.item}" — Tender price: ${e.tender_price ?? "n/a"} ETB/${e.unit || "unit"}; ` +
+      `${i + 1}. "${e.item}" — Tender price: ${e.tender_price ?? "n/a"}ETB/${e.unit || "unit"}; ` +
       `Reference price: ${e.reference_price} ETB/${e.unit || "unit"} (${e.match_type}, confidence: ${e.confidence}); ` +
       `Variance: ${e.variance_percent != null ? e.variance_percent + "%" : "n/a"}.`
     );
@@ -288,7 +291,7 @@ export default async function handler(req, res) {
       return res.status(400).json({ error: "Missing systemPrompt or userPrompt." });
     }
 
-    // ─── Normalize BOQ item field names ───────────────────────────────
+    // ─── Normalize BOQ item field names ─────────────────────────────
     // boqExtractor.js emits { itemNo, unitPrice, ... } (camelCase).
     // pricingEvidence.js and validateArithmetic() below read
     // { item_no, tender_price, ... } (snake_case). Without this
@@ -313,11 +316,11 @@ export default async function handler(req, res) {
     const pricingReference = buildPricingReference(engine);
     const pricingEvidenceBlock = formatPricingEvidenceForPrompt(pricingEvidence);
 
-    // ─── Deterministic arithmetic check (never LLM-generated) ────────────
+    // ─── Deterministic arithmetic check (never LLM-generated) ──────────
     const arithmeticErrors = validateArithmetic(boqItems, contractValue ?? null);
     const arithmeticEvidenceBlock = formatArithmeticEvidenceForPrompt(arithmeticErrors);
 
-    // ─── Extracted clause evidence (from the document, not invented) ─────
+    // ─── Extracted clause evidence (from the document, not invented) ────
     const clauseEvidenceBlock = formatClauseEvidenceForPrompt(clauses || null);
 
     // ─── Real document text, or an explicit statement that none exists ───
@@ -425,7 +428,7 @@ export default async function handler(req, res) {
       `VERIFIED ARITHMETIC EVIDENCE (source of truth — do not alter these figures):\n${arithmeticEvidenceBlock}\n\n` +
       `EXTRACTED CONTRACT CLAUSES:\n${clauseEvidenceBlock}`;
 
-    // ─── Pick a provider based on this request's actual size ─────────────
+    // ─── Pick a provider based on this request's actual size ────────────
     // See resolveProvider() above — Groq only if it fits Groq's real free-
     // tier 8,000 TPM ceiling; otherwise OpenRouter/Cerebras/DeepSeek, whose
     // free tiers hold much larger single requests.
@@ -433,7 +436,7 @@ export default async function handler(req, res) {
     const provider = resolveProvider(estimatedInputChars);
     console.log(`[check-analysis] Using ${provider.name}/${provider.model} for ~${estimatedInputChars} input chars (~${Math.round(estimatedInputChars / 3.5)} est. tokens)`);
 
-    // ─── Call the AI provider ──────────────────────────────────────────
+    // ─── Call the AI provider ─────────────────────────────────────────
     const response = await callAiProviderWithRetry(provider, {
       model: provider.model,
       temperature: 0.15,
@@ -592,15 +595,24 @@ export default async function handler(req, res) {
     analysis.pricing_reference = pricingReference;
     analysis.arithmetic_errors = arithmeticErrors;
 
-    // Compute the risk score deterministically. Returns null — not a
+    // Compute the risk scores deterministically. Returns null — not a
     // fabricated midpoint — if there wasn't enough grounded evidence to
-    // score responsibly (see calculateRiskScore above).
+    // score responsibly (see computeRiskScores above).
     const evidenceCount = pricingEvidence.length + arithmeticErrors.length;
-    const risk_score = calculateRiskScore(analysis, { hasDocumentText, evidenceCount });
+    const { compliance_risk_score, pricing_risk_score, risk_score } = computeRiskScores(analysis, {
+      hasDocumentText,
+      evidenceCount,
+      totalBidPrice: contractValue ?? null,
+    });
 
     const responsePayload = {
       ...analysis,
+      // TEMPORARY bridge field — see computeRiskScores() comment above.
+      // Prefer compliance_risk_score / pricing_risk_score below for any
+      // new consumer.
       risk_score,
+      compliance_risk_score,
+      pricing_risk_score,
       grounding: {
         has_document_text: hasDocumentText,
         document_char_count: hasDocumentText ? documentText.length : 0,

@@ -44,6 +44,15 @@ export function buildPricingEvidence(engine, boqItems) {
         item_no: item.item_no || null,
         category: match.referenceCategory || item.category || "Uncategorized",
         unit: item.unit || match.referenceUnit || "",
+        // Needed for riskScoring.js's Birr-weighted underbid/overbid
+        // exposure aggregation — a 5% variance on a 2M ETB item and a 5%
+        // variance on a 2,000 ETB item are not equally risky, and without
+        // quantity there is no way to tell them apart. Matches the same
+        // qty-or-quantity field-name defensiveness already used in
+        // arithmeticValidator.js's numOrNull(item.qty ?? item.quantity),
+        // since upstream extractors are confirmed inconsistent about which
+        // name they use.
+        quantity: item.qty ?? item.quantity ?? null,
         tender_price: tenderPrice,
         reference_price: match.matched ? match.referencePrice : null,
         // legacy field names kept for the existing UI (our_rate/market_rate)
