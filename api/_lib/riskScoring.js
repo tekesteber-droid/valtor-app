@@ -169,11 +169,19 @@ function computeMarketVarianceExposure(marketVariance, totalBidPrice) {
 
     const rateDiff = item.tender_price - item.reference_price;
     const pctDiff = item.variance_percent / 100;
+    // Cap per-item exposure at the item's own bid value (tender_price x
+    // quantity). Without this, a single garbage rate (OCR error, decimal
+    // point in the wrong place, wrong unit — all real risks on scanned
+    // tender PDFs) can produce an exposure larger than what was actually
+    // bid on that line, which is not physically meaningful and was
+    // confirmed live to push underbidRatio past 100% of the total bid
+    // price (268% observed on a deliberately extreme test case).
+    const itemBidValue = item.tender_price * item.quantity;
 
     if (pctDiff < -NEUTRAL_BAND_PCT) {
-      underbidExposure += Math.abs(rateDiff) * item.quantity;
+      underbidExposure += Math.min(Math.abs(rateDiff) * item.quantity, itemBidValue);
     } else if (pctDiff > NEUTRAL_BAND_PCT) {
-      overbidExposure += rateDiff * item.quantity;
+      overbidExposure += Math.min(rateDiff * item.quantity, itemBidValue);
     }
   }
 
