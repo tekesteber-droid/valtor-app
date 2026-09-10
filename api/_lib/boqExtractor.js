@@ -101,6 +101,19 @@ function stripMarkdownFences(text) {
     .trim();
 }
 
+// PDF text extraction (pdf-parse) sometimes splits a decimal number across
+// the column wrap in a dense table — e.g. "15." ends one line and "60"
+// starts the next. An LLM reading that raw text sees two separate tokens
+// instead of one number 15.60, and can grab just the fragment before the
+// decimal as "the rate." Confirmed live: this is the root cause of BOQ
+// rates coming out 20x-240x too low on a real bid (Group 2 Construction) —
+// not LLM hallucination, not a scaling bug elsewhere in this file. Rejoins
+// these BEFORE the text is windowed or sent to the LLM, so neither ever
+// sees the broken split.
+function rejoinWrappedDecimals(text) {
+  return text.replace(/(\d)\.\s*\n\s*(\d)/g, "$1.$2");
+}
+
 function sleep(ms) {
   return new Promise((r) => setTimeout(r, ms));
 }
@@ -485,7 +498,7 @@ export async function extractBoqWithLLM(rawText) {
   // above) before falling through to OpenRouter, while still comfortably
   // covering a real single-BOQ table (the Group 2 test case's actual
   // table body is well under this).
-  const truncated = extractBoqWindow(rawText, 20000);
+  const truncated = extractBoqWindow(rejoinWrappedDecimals(rawText), 20000);
   const userPrompt =
     `Extract the Bill of Quantities table from the following raw contract text. ` +
     `Return ONLY a JSON array.\n\n---BEGIN TEXT---\n${truncated}\n---END TEXT---`;
