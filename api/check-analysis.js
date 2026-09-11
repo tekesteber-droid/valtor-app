@@ -24,7 +24,7 @@ const supabaseAdmin = createClient(
 // needs to send, not just by which key happens to be set. Small requests
 // still prefer Groq (fastest, most headroom on RPD). Large ones route to
 // OpenRouter, whose free `:free` model variants have materially higher
-// per-request context ceilings. See resolveProvider() below — provider
+// per-request context ceilings. See resolveProviderChain() below — provider
 // constants are now computed per-request, not at module load.
 // 8000 TPM total, minus 6000 max_tokens reserved for output (reasoning
 // models need real headroom to think AND answer — see reasoning_format
@@ -33,70 +33,74 @@ const supabaseAdmin = createClient(
 // margin already is.
 const GROQ_SAFE_CHAR_BUDGET = 6000;
 
-function resolveProvider(estimatedInputChars) {
+// Returns an ORDERED LIST of every configured provider, not a single pick.
+// resolveProvider() (removed) used to return one provider and stop —
+// meaning if that provider returned HTTP 200 with empty/malformed JSON
+// (confirmed live, repeatedly, on openrouter/free), the whole audit died
+// even though Cerebras and DeepSeek were configured and untried. The
+// caller (callAiWithFallback, below) walks this list and only advances to
+// the next entry when the current one fails — at the HTTP level (existing
+// retry logic) OR at the content level (new).
+function resolveProviderChain(estimatedInputChars) {
   const hasGroq = Boolean(process.env.GROQ_API_KEY);
   const hasOpenRouter = Boolean(process.env.OPENROUTER_API_KEY);
   const hasCerebras = Boolean(process.env.CEREBRAS_API_KEY);
   const hasDeepSeek = Boolean(process.env.DEEPSEEK_API_KEY);
 
-  // Groq only if the request actually fits its free-tier TPM ceiling —
-  // otherwise skip straight to a provider that can hold the whole document.
-  if (hasGroq && estimatedInputChars <= GROQ_SAFE_CHAR_BUDGET) {
-    return {
-      name: "groq",
-      apiKey: process.env.GROQ_API_KEY,
-      apiUrl: "https://api.groq.com/openai/v1/chat/completions",
-      model: process.env.GROQ_MODEL || "qwen/qwen3.6-27b",
-    };
-  }
-  if (hasOpenRouter) {
-    return {
-      name: "openrouter",
-      apiKey: process.env.OPENROUTER_API_KEY,
-      apiUrl: "https://openrouter.ai/api/v1/chat/completions",
-      // OpenRouter's free-model roster churns weekly (models get delisted
-      // or moved to paid with no notice — confirmed by direct testing in
-      // this session: deepseek/deepseek-chat had no free variant at all,
-      // and deepseek-chat-v3-0324:free was pulled between when this was
-      // last checked and when it was actually called). Hardcoding any
-      // specific :free slug is chasing a moving target.
-      //
-      // Fix: use openrouter/free — OpenRouter's own auto-router, which
-      // picks a currently-available free model behind the scenes based on
-      // what the request needs (long context, JSON mode, etc). Slightly
-      // less predictable about which underlying model answers (visible in
-      // the response's `model` field if you want to log it), but it keeps
-      // working as the free lineup changes underneath it, instead of
-      // needing a manual slug fix every few days.
-      model: process.env.OPENROUTER_MODEL || "openrouter/free",
-    };
-  }
-  if (hasCerebras) {
-    return {
-      name: "cerebras",
-      apiKey: process.env.CEREBRAS_API_KEY,
-      apiUrl: "https://api.cerebras.ai/v1/chat/completions",
-      model: process.env.CEREBRAS_MODEL || "llama-3.3-70b",
-    };
-  }
-  if (hasGroq) {
-    // Groq key exists but the request is too large for its free tier —
-    // fall through to it anyway only if nothing else is configured, so
-    // there's still an attempt (which will 413) rather than a silent
-    // "no provider configured" failure with no actionable error.
-    return {
-      name: "groq",
-      apiKey: process.env.GROQ_API_KEY,
-      apiUrl: "https://api.groq.com/openai/v1/chat/completions",
-      model: process.env.GROQ_MODEL || "qwen/qwen3.6-27b",
-    };
-  }
-  return {
+  const groq = hasGroq && {
+    name: "groq",
+    apiKey: process.env.GROQ_API_KEY,
+    apiUrl: "https://api.groq.com/openai/v1/chat/completions",
+    model: process.env.GROQ_MODEL || "qwen/qwen3.6-27b",
+  };
+  const openrouter = hasOpenRouter && {
+    name: "openrouter",
+    apiKey: process.env.OPENROUTER_API_KEY,
+    apiUrl: "https://openrouter.ai/api/v1/chat/completions",
+    // OpenRouter's free-model roster churns weekly (models get delisted
+    // or moved to paid with no notice — confirmed by direct testing in
+    // this session: deepseek/deepseek-chat had no free variant at all,
+    // and deepseek-chat-v3-0324:free was pulled between when this was
+    // last checked and when it was actually called). Hardcoding any
+    // specific :free slug is chasing a moving target.
+    //
+    // Fix: use openrouter/free — OpenRouter's own auto-router, which
+    // picks a currently-available free model behind the scenes based on
+    // what the request needs (long context, JSON mode, etc). Slightly
+    // less predictable about which underlying model answers (visible in
+    // the response's `model` field if you want to log it), but it keeps
+    // working as the free lineup changes underneath it, instead of
+    // needing a manual slug fix every few days. This provider is still
+    // the least reliable link in the chain content-wise (confirmed live:
+    // repeated empty/malformed 200 responses) — that's exactly why it no
+    // longer gets to be the ONLY thing tried for large requests.
+    model: process.env.OPENROUTER_MODEL || "openrouter/free",
+  };
+  const cerebras = hasCerebras && {
+    name: "cerebras",
+    apiKey: process.env.CEREBRAS_API_KEY,
+    apiUrl: "https://api.cerebras.ai/v1/chat/completions",
+    model: process.env.CEREBRAS_MODEL || "llama-3.3-70b",
+  };
+  const deepseek = hasDeepSeek && {
     name: "deepseek",
     apiKey: process.env.DEEPSEEK_API_KEY,
     apiUrl: "https://api.deepseek.com/chat/completions",
     model: process.env.DEEPSEEK_MODEL || "deepseek-chat",
   };
+
+  const chain = [];
+  // Groq first ONLY if this specific request fits its free-tier ceiling.
+  if (groq && estimatedInputChars <= GROQ_SAFE_CHAR_BUDGET) chain.push(groq);
+  if (openrouter) chain.push(openrouter);
+  if (cerebras) chain.push(cerebras);
+  if (deepseek) chain.push(deepseek);
+  // Groq again, last resort, even when oversized for its own safe budget —
+  // a fast, loud 413 is better than silently running out of providers
+  // with nothing attempted and nothing logged.
+  if (groq && estimatedInputChars > GROQ_SAFE_CHAR_BUDGET) chain.push(groq);
+
+  return chain;
 }
 
 // ─── Deterministic risk scores (Option C: Compliance Risk + Pricing Risk) ──
@@ -213,7 +217,7 @@ function formatClauseEvidenceForPrompt(clauses) {
 // exponential backoff. Non-retryable errors (4xx other than 429) throw
 // immediately — no point retrying a bad request or auth failure.
 //
-// `provider` is the object returned by resolveProvider() — passed in per
+// `provider` is the object returned by resolveProviderChain() — passed in per
 // call rather than read from a module-level constant, since which
 // provider to use now depends on this specific request's document size.
 async function callAiProviderWithRetry(provider, requestBody, { maxRetries = 3, capMs = 15000 } = {}) {
@@ -263,6 +267,104 @@ async function callAiProviderWithRetry(provider, requestBody, { maxRetries = 3, 
   }
   // Unreachable — the loop always returns or throws — but keeps TS/linters happy.
   throw new Error("AI provider retry loop exited unexpectedly.");
+}
+
+// Content-level validation, split out of the old inline handler logic so it
+// can run once per provider attempt instead of once total. Same salvage
+// philosophy as parseJsonWithTruncationSalvage() in boqExtractor.js: try
+// the raw parse, then try to pull the first {...} block out of a prose
+// wrapper, and only give up if neither works.
+function tryParseAnalysisJson(raw, providerLabel) {
+  if (raw.length < 50) {
+    return { ok: false, reason: `empty_response (${raw.length} chars)` };
+  }
+  try {
+    return { ok: true, analysis: JSON.parse(raw) };
+  } catch {
+    const jsonMatch = raw.match(/\{[\s\S]*\}/);
+    if (jsonMatch) {
+      try {
+        const analysis = JSON.parse(jsonMatch[0]);
+        console.warn(`[check-analysis] ${providerLabel} ignored response_format — salvaged JSON from prose wrapper.`);
+        return { ok: true, analysis };
+      } catch (salvageErr) {
+        return { ok: false, reason: `unsalvageable_json: ${salvageErr.message}` };
+      }
+    }
+    return { ok: false, reason: "unsalvageable_json: no {...} block found" };
+  }
+}
+
+// Vercel Hobby plan hard-caps a serverless function at 60s — confirmed
+// live, not overridable (see 09_TECHNICAL_ROADMAP.md / project constraints).
+// This deadline leaves real headroom after the AI call returns for
+// arithmetic validation, risk scoring, and response serialization, so a
+// mid-chain fallback attempt doesn't just trade "empty audit" for "silent
+// platform timeout with nothing in the logs."
+const AI_CALL_DEADLINE_MS = 42000;
+
+// Walks resolveProviderChain() in order. Two distinct failure modes cause
+// a fall-through to the next provider:
+//   1. HTTP-level failure — callAiProviderWithRetry() throws (non-retryable
+//      status, or retries exhausted).
+//   2. Content-level failure — the call "succeeds" (HTTP 200) but the body
+//      is empty or unparseable JSON even after salvage. This is the case
+//      the old code did NOT handle: it just failed the whole audit.
+// Only throws once every provider in the chain has been tried and failed,
+// or the time deadline is hit — the caller gets one clear error either way,
+// with a full attempts[] trail for logging/debugging.
+async function callAiWithFallback(estimatedInputChars, baseRequestBody) {
+  const chain = resolveProviderChain(estimatedInputChars);
+  if (!chain.length) {
+    throw new Error("No AI provider is configured (no API keys present).");
+  }
+
+  const startedAt = Date.now();
+  const attempts = [];
+
+  for (let i = 0; i < chain.length; i++) {
+    const provider = chain[i];
+    const remainingMs = AI_CALL_DEADLINE_MS - (Date.now() - startedAt);
+    if (remainingMs <= 1500) {
+      attempts.push(`${provider.name}: skipped (time budget exhausted)`);
+      break;
+    }
+
+    console.log(`[check-analysis] Attempt ${i + 1}/${chain.length}: ${provider.name}/${provider.model} for ~${estimatedInputChars} input chars (~${Math.round(estimatedInputChars / 3.5)} est. tokens)`);
+
+    let raw = "";
+    try {
+      const response = await callAiProviderWithRetry(
+        provider,
+        { ...baseRequestBody, model: provider.model },
+        // Full retry budget only for the FIRST provider tried. Once we're
+        // already falling back, spend less time per provider so the whole
+        // chain actually gets a turn before the deadline above hits.
+        { maxRetries: i === 0 ? 3 : 1, capMs: Math.max(1000, Math.min(15000, remainingMs)) }
+      );
+      const data = await response.json();
+      raw = (data.choices?.[0]?.message?.content || "").replace(/```json/g, "").replace(/```/g, "").trim();
+    } catch (httpErr) {
+      console.error(`[check-analysis] ${provider.name} failed at HTTP level: ${httpErr.message}`);
+      attempts.push(`${provider.name}: http_error — ${httpErr.message}`);
+      continue;
+    }
+
+    console.log(`[check-analysis] ${provider.name}/${provider.model} returned ${raw.length} chars. Preview: "${raw.slice(0, 150)}"`);
+
+    const parsed = tryParseAnalysisJson(raw, `${provider.name}/${provider.model}`);
+    if (parsed.ok) {
+      return { provider, analysis: parsed.analysis, raw };
+    }
+
+    console.error(`[check-analysis] ${provider.name}/${provider.model} content invalid — ${parsed.reason}. Falling through to next provider.`);
+    attempts.push(`${provider.name}: ${parsed.reason}`);
+  }
+
+  throw Object.assign(
+    new Error("All configured AI providers failed or returned invalid content."),
+    { attempts }
+  );
 }
 
 export default async function handler(req, res) {
@@ -330,7 +432,7 @@ export default async function handler(req, res) {
     //
     // A hard 60,000-char ceiling always applies regardless of provider —
     // this is a sanity cap against runaway request sizes, not the primary
-    // sizing mechanism. The primary mechanism is resolveProvider() below,
+    // sizing mechanism. The primary mechanism is resolveProviderChain() below,
     // which picks a provider whose free-tier context can actually hold
     // this specific request rather than truncating a real multi-document
     // tender package down to fit Groq's fixed 8,000 TPM ceiling.
@@ -428,105 +530,60 @@ export default async function handler(req, res) {
       `VERIFIED ARITHMETIC EVIDENCE (source of truth — do not alter these figures):\n${arithmeticEvidenceBlock}\n\n` +
       `EXTRACTED CONTRACT CLAUSES:\n${clauseEvidenceBlock}`;
 
-    // ─── Pick a provider based on this request's actual size ────────────
-    // See resolveProvider() above — Groq only if it fits Groq's real free-
-    // tier 8,000 TPM ceiling; otherwise OpenRouter/Cerebras/DeepSeek, whose
-    // free tiers hold much larger single requests.
+    // ─── Call the AI provider, falling through the whole chain on either
+    // HTTP-level failure OR content-level failure (empty/malformed JSON) ──
+    // See resolveProviderChain()/callAiWithFallback() above. Groq gets tried
+    // first only if this request fits its free-tier ceiling; if whichever
+    // provider answers returns HTTP 200 with garbage, this now moves to the
+    // next configured provider instead of failing the whole audit — the gap
+    // that let repeated openrouter/free empty responses kill real audits.
     const estimatedInputChars = groundedSystemPrompt.length + groundedUserPrompt.length;
-    const provider = resolveProvider(estimatedInputChars);
-    console.log(`[check-analysis] Using ${provider.name}/${provider.model} for ~${estimatedInputChars} input chars (~${Math.round(estimatedInputChars / 3.5)} est. tokens)`);
 
-    // ─── Call the AI provider ─────────────────────────────────────────
-    const response = await callAiProviderWithRetry(provider, {
-      model: provider.model,
-      temperature: 0.15,
-      // qwen/qwen3.6-27b (Groq's default here) is a reasoning model — it
-      // "thinks" before answering. reasoning_format: "hidden" drops the
-      // thinking output entirely rather than just separating it into a
-      // field ("parsed" still counts thinking against max_tokens and can
-      // leave zero budget for the actual JSON answer — confirmed directly:
-      // "parsed" alone still produced the same empty-content 400 this
-      // session). "hidden" + a larger max_tokens budget is the actual fix.
-      reasoning_format: "hidden",
-      // Raised from 6000 after a confirmed-live failure: a 115-item BOQ
-      // audit produced a rich, correct executive_summary and
-      // technical_critique (verbose prose fields) but completely empty
-      // contractual_traps and scope_gaps arrays — despite the executive
-      // summary explicitly describing findings that belonged in those
-      // arrays (missing defects liability/retention/LD clauses, absent
-      // electrical scope). Root cause: prose fields consumed the token
-      // budget before the model reached the structured arrays later in
-      // the JSON object. Combined with the field-ordering instruction
-      // above (structured fields first, prose last), this gives real
-      // headroom so a cutoff — if it still happens — truncates prose,
-      // not findings.
-      max_tokens: Number(process.env.AI_MAX_OUTPUT_TOKENS) || 8000,
-      response_format: { type: "json_object" },
-      messages: [
-        { role: "system", content: groundedSystemPrompt },
-        { role: "user", content: groundedUserPrompt },
-      ],
-    });
-
-    const data = await response.json();
-
-    // Extract the LLM's JSON from the response
-    let raw = data.choices?.[0]?.message?.content || "";
-    raw = raw.replace(/```json/g, "").replace(/```/g, "").trim();
-
-    // Log what actually came back BEFORE parsing — confirmed live that a
-    // provider can return a response that is technically 200 OK, has no
-    // parse error, and still produces a completely empty audit (no
-    // executive_summary, no findings, everything blank). The earlier
-    // version of this code defaulted an empty/missing content field to
-    // the literal string "{}" and parsed it with zero warning — a
-    // trivially valid empty object sailed through as if it were a real
-    // success. That is a worse failure mode than an honest crash, because
-    // it produces a PDF that LOOKS like a completed audit but contains
-    // nothing, with no signal anywhere in the logs that anything went
-    // wrong. This is now treated as a real, loud failure instead.
-    console.log(`[check-analysis] Provider ${provider.name}/${provider.model} returned ${raw.length} chars. Preview: "${raw.slice(0, 150)}"`);
-
-    if (raw.length < 50) {
-      console.error(`[check-analysis] Provider ${provider.name}/${provider.model} returned an empty or near-empty response (${raw.length} chars) — refusing to treat this as a valid audit.`);
-      return res.status(502).json({
-        error: "AI provider returned an empty response. Please retry the audit.",
-        detail: `Provider ${provider.name} returned ${raw.length} characters of content.`,
-      });
-    }
-
-    // Defensive parse — some free-tier/routed models (confirmed live on
-    // openrouter/free) ignore response_format:{type:"json_object"} and
-    // return conversational prose ("Here's the analysis...") instead of
-    // raw JSON, despite the explicit instruction. Rather than let that
-    // crash the whole audit with an uncaught 500, try to salvage the
-    // first {...} block from the response before giving up. This mirrors
-    // the same salvage philosophy as parseJsonWithTruncationSalvage() in
-    // boqExtractor.js — a malformed provider response should degrade
-    // gracefully, not take down the endpoint.
-    let analysis;
+    let provider, analysis, raw;
     try {
-      analysis = JSON.parse(raw);
-    } catch (parseErr) {
-      const jsonMatch = raw.match(/\{[\s\S]*\}/);
-      if (jsonMatch) {
-        try {
-          analysis = JSON.parse(jsonMatch[0]);
-          console.warn(`[check-analysis] Provider ${provider.name}/${provider.model} ignored response_format — salvaged JSON from prose wrapper.`);
-        } catch (salvageErr) {
-          console.error(`[check-analysis] JSON salvage also failed: ${salvageErr.message}`);
-        }
-      }
-      if (!analysis) {
-        // Genuinely unrecoverable — return a real 502 (bad upstream
-        // response) instead of a bare crash, so callers (web UI, bot)
-        // can show "please retry" instead of a silent failure.
-        console.error(`[check-analysis] Provider ${provider.name}/${provider.model} returned non-JSON, unsalvageable: "${raw.slice(0, 120)}..."`);
-        return res.status(502).json({
-          error: "AI provider returned an invalid response. Please retry the audit.",
-          detail: `Provider ${provider.name} did not return valid JSON.`,
-        });
-      }
+      ({ provider, analysis, raw } = await callAiWithFallback(estimatedInputChars, {
+        temperature: 0.15,
+        // qwen/qwen3.6-27b (Groq's default here) is a reasoning model — it
+        // "thinks" before answering. reasoning_format: "hidden" drops the
+        // thinking output entirely rather than just separating it into a
+        // field ("parsed" still counts thinking against max_tokens and can
+        // leave zero budget for the actual JSON answer — confirmed directly:
+        // "parsed" alone still produced the same empty-content 400 this
+        // session). "hidden" + a larger max_tokens budget is the actual fix.
+        // NOTE: non-Groq providers ignore an unrecognized field, so this is
+        // safe to send unconditionally down the whole chain.
+        reasoning_format: "hidden",
+        // Raised from 6000 after a confirmed-live failure: a 115-item BOQ
+        // audit produced a rich, correct executive_summary and
+        // technical_critique (verbose prose fields) but completely empty
+        // contractual_traps and scope_gaps arrays — despite the executive
+        // summary explicitly describing findings that belonged in those
+        // arrays (missing defects liability/retention/LD clauses, absent
+        // electrical scope). Root cause: prose fields consumed the token
+        // budget before the model reached the structured arrays later in
+        // the JSON object. Combined with the field-ordering instruction
+        // above (structured fields first, prose last), this gives real
+        // headroom so a cutoff — if it still happens — truncates prose,
+        // not findings.
+        max_tokens: Number(process.env.AI_MAX_OUTPUT_TOKENS) || 8000,
+        response_format: { type: "json_object" },
+        messages: [
+          { role: "system", content: groundedSystemPrompt },
+          { role: "user", content: groundedUserPrompt },
+        ],
+      }));
+      console.log(`[check-analysis] Audit succeeded via ${provider.name}/${provider.model} (${raw.length} chars)`);
+    } catch (fallbackErr) {
+      // Genuinely unrecoverable — every configured provider either failed
+      // at the HTTP level or returned empty/unparseable content. Return a
+      // real 502 (bad upstream response) instead of a bare crash, with the
+      // full per-provider attempts trail so this is debuggable from logs
+      // alone rather than needing to reproduce it live.
+      console.error(`[check-analysis] AI fallback chain exhausted: ${fallbackErr.attempts?.join(" | ") || fallbackErr.message}`);
+      return res.status(502).json({
+        error: "AI provider returned an invalid response. Please retry the audit.",
+        detail: fallbackErr.attempts?.join("; ") || fallbackErr.message,
+      });
     }
 
     // Ensure arrays exist
