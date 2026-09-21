@@ -20,7 +20,7 @@ import busboy from "busboy";
 import { extractPdfText } from "./_lib/pdfExtractor.js";
 import { extractDocxText } from "./_lib/docxExtractor.js";
 import { extractBoqFromXlsxBuffer, flattenXlsxToText } from "./_lib/xlsxExtractor.js";
-import { extractBoqWithLLM, extractClausesWithLLM } from "./_lib/boqExtractor.js";
+import { extractBoqWithLLM, extractClausesWithLLM, extractStatedBidPrice, extractSignatories } from "./_lib/boqExtractor.js";
 
 const supabaseAdmin = createClient(
   process.env.VITE_SUPABASE_URL,
@@ -234,12 +234,16 @@ export default async function handler(req, res) {
       });
     }
 
-    // Run BOQ and clause extraction in parallel — independent LLM calls
-    // over the same source text, both grounded in what was actually
-    // extracted above, never in the filename.
-    const [boqItems, clauses] = await Promise.all([
+    // Run BOQ, clause, bid-price, and signatory extraction in parallel —
+    // independent calls over the same source text, both grounded in what
+    // was actually extracted above, never in the filename. Bid price and
+    // signatories are computed here (not in each caller) so both the web
+    // app and telegram-webhook.js get them from one shared round trip.
+    const [boqItems, clauses, bidPriceResult, signatoryResult] = await Promise.all([
       extractBoqWithLLM(rawText),
       extractClausesWithLLM(rawText),
+      extractStatedBidPrice(rawText),
+      extractSignatories(rawText),
     ]);
 
     return res.status(200).json({
@@ -248,6 +252,9 @@ export default async function handler(req, res) {
       rawText,
       boqItems,
       clauses,
+      totalBidPrice: bidPriceResult.value,
+      totalBidPriceMethod: bidPriceResult.method, // "regex" | "llm" | "none"
+      signatories: signatoryResult.signatories,
       meta: {
         method: extraction.method,
         numPages: extraction.numPages,

@@ -79,9 +79,17 @@ function emptyState(msg) {
   return `<p class="empty-state">${esc(msg)}</p>`;
 }
 
-function buildArithmeticTable(errors) {
+function buildArithmeticTable(errors, totalBidPrice) {
   if (!errors || errors.length === 0) {
-    return emptyState("No arithmetic discrepancies were found in the extracted BOQ line items.");
+    if (totalBidPrice === null || totalBidPrice === undefined) {
+      return emptyState(
+        "No arithmetic discrepancies were found among individual line items. Grand-total " +
+        "reconciliation was NOT run — no bid/contract total price was available to check the " +
+        "extracted BOQ against. This is not the same as a clean result; the total price could " +
+        "not be verified."
+      );
+    }
+    return emptyState("No arithmetic discrepancies were found in the extracted BOQ line items, including grand-total reconciliation against the stated bid price.");
   }
   const rows = errors.map(e => `
     <tr>
@@ -400,7 +408,7 @@ function buildReportHtml(analysis, meta) {
       ${section("Technical Critique", `<p>${esc(analysis.technical_critique)}</p>`)}
       ${section("Methodology Assessment", strengthsWeaknesses)}
       ${section("Key Risks", buildList(analysis.key_risks))}
-      ${section("Arithmetic Findings", buildArithmeticTable(analysis.arithmetic_errors), { pageBreakBefore: true })}
+      ${section("Arithmetic Findings", buildArithmeticTable(analysis.arithmetic_errors, analysis.totalBidPrice), { pageBreakBefore: true })}
       ${section("Contractual Risk Register", buildContractualTraps(analysis.contractual_traps))}
       ${section("Scope Gaps", buildScopeGaps(analysis.scope_gaps))}
       ${section("Market / Pricing Variance", buildMarketVariance(analysis.market_variance, analysis.pricing_reference), { pageBreakBefore: true })}

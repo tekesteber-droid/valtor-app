@@ -194,7 +194,7 @@ async function runAudit(buffer, fileName, baseUrl, progressCb) {
       boqItems: extractData.boqItems,
       documentText: extractData.rawText || null,
       clauses: extractData.clauses || null,
-      contractValue: null,
+      contractValue: extractData.totalBidPrice ?? null,
     }),
   });
 

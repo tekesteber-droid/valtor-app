@@ -192,21 +192,30 @@ function formatArithmeticEvidenceForPrompt(errors) {
     .join("\n");
 }
 
-// Renders extracted contract clauses (from clauseExtractor.js, via
-// extract-boq.js) as evidence. If a clause is null, the document simply
-// didn't state it — the LLM must say so rather than invent FIDIC language.
+// Renders extracted contract clauses (from extractClausesWithLLM(), via
+// extract-boq.js) as evidence. A null here means "not found in the text
+// that was searched" — it is extraction-gap evidence, NOT proof the
+// clause is absent from the tender (GCC/SCC clauses routinely live in a
+// separate employer-issued document the bidder's own proposal never
+// restates). See grounding rule 7 in groundedSystemPrompt below for how
+// the synthesis model is instructed to treat this.
 function formatClauseEvidenceForPrompt(clauses) {
   if (!clauses) {
     return "No contract clause data was extracted (no document text was supplied, or clause extraction was not run). Do not invent FIDIC clause references or contractual_traps not grounded in the document text below.";
   }
   const lines = Object.entries(clauses).map(
-    ([key, val]) => `${key}: ${val === null ? "not stated in the document" : val}`
+    ([key, val]) => `${key}: ${val === null
+      ? "not found in the analyzed document(s) — this is NOT evidence the clause is " +
+        "absent from the tender; it commonly lives in a separate Conditions of Contract " +
+        "document not included in this analysis"
+      : val}`
   );
   return (
-    "The following clauses were extracted directly from the submitted document text. " +
-    "Only discuss contractual_traps that reference these extracted values or explicit " +
-    "text in the DOCUMENT TEXT section below — do not invent clause numbers or terms " +
-    "the document does not contain:\n" + lines.join("\n")
+    "The following clauses were searched for in the submitted document text. A 'not found' " +
+    "result is an extraction gap, not proof of absence — see grounding rule 7. Only discuss " +
+    "contractual_traps that reference these extracted values or explicit text in the " +
+    "DOCUMENT TEXT section below — do not invent clause numbers or terms the document does " +
+    "not contain:\n" + lines.join("\n")
   );
 }
 
@@ -483,7 +492,16 @@ export default async function handler(req, res) {
       `finishing, a truncated prose paragraph is recoverable, but an array that gets cut off after "contractual_` +
       `traps": [ produces a bid audit with silently missing findings next to a summary that describes findings ` +
       `the array doesn't contain — a genuine, previously-confirmed failure mode. Structured findings must never ` +
-      `be sacrificed to make room for narrative text.\n\n` +
+      `be sacrificed to make room for narrative text.\n` +
+      `7. GCC/SCC CLAUSES — read before flagging a "missing clause": a bidder's own Technical/Financial ` +
+      `Proposal is NOT the document where General or Special Conditions of Contract terms (Liquidated Damages, ` +
+      `Retention Money, Price Adjustment, Defects Liability Period, Performance Bond) are expected to appear ` +
+      `verbatim — those live in the employer's own Standard Bidding Documents, a separate document the bidder ` +
+      `is not required to restate. A "not found" result for one of these in the extracted clause evidence means ` +
+      `there is NO EVIDENCE EITHER WAY — never generate a contractual_traps finding on that basis alone. ` +
+      `Separately: if the DOCUMENT TEXT contains the bidder accepting the bidding documents "in their entirety," ` +
+      `"without reservation," or similar blanket-acceptance language, treat all GCC/SCC-level clauses as covered ` +
+      `by that acceptance and suppress those findings entirely, regardless of what the clause evidence shows.\n\n` +
       // Explicit schema — this block is defined HERE, in check-analysis.js
       // itself, rather than left to whatever loose field-name list a
       // given caller's systemPrompt happens to mention. Confirmed live:

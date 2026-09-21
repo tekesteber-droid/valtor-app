@@ -627,6 +627,118 @@ export async function extractClausesWithLLM(rawText) {
   }
 }
 
+// ─── Bid price extraction (regex-first, LLM fallback) ──────────────────
+// Fixes: telegram-webhook.js previously hardcoded contractValue: null,
+// which silently disabled checkGrandTotal() in arithmeticValidator.js on
+// every Telegram-run audit. Tier 1 covers the standard Ethiopian SPD
+// Bid Submission Sheet phrasing ("the total price of our Bid is X BIRR").
+// Tier 2 only runs if tier 1 finds nothing, for non-standard phrasing or
+// OCR noise. If both fail, callers get { value: null, method: "none" }
+// explicitly — this must NOT be treated the same as "checked and clean";
+// see reportTemplate.js buildArithmeticTable().
+const BID_PRICE_PATTERNS = [
+  /total\s+price\s+of\s+our\s+bid\s+is\s*[:\-]?\s*([\d,]+\.?\d*)/i,
+  /total\s+bid\s+price\s*[:\-]?\s*(?:is\s*)?([\d,]+\.?\d*)/i,
+  /bid\s+price\s+is\s*[:\-]?\s*([\d,]+\.?\d*)\s*(?:birr|etb)/i,
+];
+
+function extractBidPriceByRegex(rawText) {
+  if (!rawText || typeof rawText !== "string") return null;
+  for (const pattern of BID_PRICE_PATTERNS) {
+    const match = rawText.match(pattern);
+    if (match) {
+      const num = Number(match[1].replace(/,/g, ""));
+      if (Number.isFinite(num) && num > 0) return num;
+    }
+  }
+  return null;
+}
+
+const BID_PRICE_SYSTEM_PROMPT =
+  "Find the bidder's total submitted bid price in the following construction tender " +
+  "document text. This is usually stated near the Bid Submission Sheet, e.g. \"the total " +
+  "price of our Bid is X BIRR\". Return ONLY a JSON object: {\"totalBidPrice\": number or " +
+  "null}. If genuinely not stated, return null — do not guess or compute one from BOQ " +
+  "line items yourself.";
+
+export async function extractStatedBidPrice(rawText) {
+  const byRegex = extractBidPriceByRegex(rawText);
+  if (byRegex !== null) return { value: byRegex, method: "regex" };
+
+  if (!rawText || typeof rawText !== "string") return { value: null, method: "none" };
+  const truncated = rawText.slice(0, 24000);
+  const userPrompt = `---BEGIN TEXT---\n${truncated}\n---END TEXT---`;
+  const provider = resolveBoqProvider(BID_PRICE_SYSTEM_PROMPT.length + userPrompt.length);
+  try {
+    const { text } = await callLLM(provider, BID_PRICE_SYSTEM_PROMPT, userPrompt, { maxTokens: 200 });
+    const parsed = JSON.parse(stripMarkdownFences(text));
+    const num = Number(parsed.totalBidPrice);
+    if (Number.isFinite(num) && num > 0) return { value: num, method: "llm" };
+  } catch (err) {
+    console.error("[extractStatedBidPrice] LLM fallback failed:", err.message);
+  }
+  return { value: null, method: "none" };
+}
+
+// ─── Signatory extraction (regex-first, LLM fallback) ───────────────────
+// New capability — nothing in the codebase previously checked whether
+// multiple different names sign as General Manager / authorized
+// representative across one bid package. Deliberately conservative:
+// this produces a NEEDS_REVIEW-style prompt for a human, not an
+// accusation — see checkSignatoryConsistency() below.
+const SIGNATORY_PATTERN =
+  /Name[:\s]+([A-Z][A-Za-z.\s]{2,40}?)\s*\n\s*In the capacity of[.\s:]*([A-Za-z\s]{2,40})/gi;
+
+function extractSignatoriesByRegex(rawText) {
+  if (!rawText || typeof rawText !== "string") return [];
+  return [...rawText.matchAll(SIGNATORY_PATTERN)].map((m) => ({
+    name: m[1].trim(),
+    capacity: m[2].trim(),
+  }));
+}
+
+const SIGNATORY_SYSTEM_PROMPT =
+  "Find every signature / authorized-representative block in this construction bid " +
+  "document (Bid Submission Sheet, Bidder Certification, Bill of Quantities signature " +
+  "blocks, Bid Security, etc). Return ONLY a JSON array: [{\"name\": string, \"capacity\": " +
+  "string}]. Only include actual signature/authorization blocks — not the Proposed " +
+  "Personnel / CV listing. Return an empty array if none are found.";
+
+export async function extractSignatories(rawText) {
+  const byRegex = extractSignatoriesByRegex(rawText);
+  if (byRegex.length > 0) return { signatories: byRegex, method: "regex" };
+
+  if (!rawText || typeof rawText !== "string") return { signatories: [], method: "none" };
+  const truncated = rawText.slice(0, 24000);
+  const userPrompt = `---BEGIN TEXT---\n${truncated}\n---END TEXT---`;
+  const provider = resolveBoqProvider(SIGNATORY_SYSTEM_PROMPT.length + userPrompt.length);
+  try {
+    const { text } = await callLLM(provider, SIGNATORY_SYSTEM_PROMPT, userPrompt, { maxTokens: 500 });
+    const parsed = JSON.parse(stripMarkdownFences(text));
+    if (Array.isArray(parsed)) return { signatories: parsed, method: "llm" };
+  } catch (err) {
+    console.error("[extractSignatories] LLM fallback failed:", err.message);
+  }
+  return { signatories: [], method: "none" };
+}
+
+export function checkSignatoryConsistency(signatories) {
+  const claimingGM = (signatories || []).filter((s) => /general manager/i.test(s.capacity));
+  const distinctNames = [...new Set(claimingGM.map((s) => s.name.toLowerCase().replace(/\s+/g, " ").trim()))];
+  if (distinctNames.length > 1) {
+    return [{
+      location: "Signatory blocks",
+      description:
+        `${distinctNames.length} different names sign as "General Manager" / authorized ` +
+        `representative across this document: ${claimingGM.map((s) => s.name).join(", ")}. ` +
+        `This may be legitimate (delegation, joint venture, a role change between sections) — ` +
+        `verify directly with the bidder before treating it as a discrepancy.`,
+      severity: "MEDIUM",
+    }];
+  }
+  return [];
+}
+
 function emptyClauses() {
   return {
     performanceBond: null,
@@ -645,4 +757,4 @@ function normalizeClause(val) {
   if (s === "" || s.toLowerCase() === "null" || s.toLowerCase() === "undefined")
     return null;
   return s;
-}
+}
